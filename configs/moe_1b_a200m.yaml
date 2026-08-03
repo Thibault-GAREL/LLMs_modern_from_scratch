@@ -1,0 +1,49 @@
+# Fine-grained MoE, ~1B total params with ~200M active per token.
+# DeepSeekMoE-style shared experts + aux-loss-free balancing (DeepSeek-V3).
+# Sized for a pod, not for the local 6 GB GPU.
+model:
+  d_model: 1024
+  n_layers: 12
+  vocab_size: 32000
+  max_seq_len: 2048
+  bias: false
+  tie_embeddings: true
+  attention:
+    kind: gqa
+    n_heads: 16
+    n_kv_heads: 4
+  position:
+    kind: rope
+    rope_theta: 10000.0
+  ffn:
+    kind: swiglu
+    multiple_of: 256
+  moe:
+    enabled: true
+    n_experts: 64
+    top_k: 6
+    n_shared_experts: 2
+    d_ff_expert: 384
+    first_k_dense: 1
+    gate: sigmoid
+    balance: aux_loss_free
+    bias_update_gamma: 1.0e-3
+    seq_aux_alpha: 1.0e-4
+    router_z_loss_coef: 1.0e-3
+  norm:
+    kind: rmsnorm
+    placement: pre
+  init:
+    scheme: fixed
+    std: 0.02
+    scaled_residual: true
+train:
+  precision: bf16
+  lr: 3.0e-4
+  schedule: wsd
+  warmup_steps: 200
+  decay_steps: 400
+  max_steps: 4000
+  micro_batch_size: 4
+  grad_accum_steps: 8
+  seq_len: 1024

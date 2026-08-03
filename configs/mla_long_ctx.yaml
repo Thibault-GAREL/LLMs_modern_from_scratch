@@ -1,0 +1,48 @@
+# MLA + YaRN + attention sinks: long-context profile with a latent KV cache.
+# Trained at 4096, served at 16384 through YaRN scaling (factor 4).
+model:
+  d_model: 1024
+  n_layers: 12
+  vocab_size: 32000
+  max_seq_len: 16384
+  bias: false
+  tie_embeddings: true
+  attention:
+    kind: mla
+    n_heads: 16
+    n_kv_heads: null
+    kv_lora_rank: 512
+    q_lora_rank: null
+    qk_rope_head_dim: 64
+    qk_nope_head_dim: 128
+    v_head_dim: 128
+    qk_norm: true
+    attn_sinks: 4
+  position:
+    kind: rope
+    rope_theta: 10000.0
+    rope_style: half
+    scaling:
+      kind: yarn
+      factor: 4.0
+      original_max_seq_len: 4096
+      attn_temperature: true
+  ffn:
+    kind: swiglu
+    multiple_of: 256
+  norm:
+    kind: rmsnorm
+    placement: pre
+  init:
+    scheme: fixed
+    std: 0.02
+    scaled_residual: true
+train:
+  precision: fp16
+  lr: 3.0e-4
+  schedule: cosine
+  warmup_steps: 200
+  max_steps: 2000
+  micro_batch_size: 4
+  grad_accum_steps: 4
+  seq_len: 1024

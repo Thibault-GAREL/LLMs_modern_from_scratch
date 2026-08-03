@@ -1,0 +1,39 @@
+# Vanilla Transformer (Vaswani et al., 2017), decoder-only equivalent.
+# Zero-ablation reference: every modern flag is off.
+model:
+  d_model: 512
+  n_layers: 6
+  vocab_size: 32000
+  max_seq_len: 512
+  bias: true
+  dropout: 0.1
+  tie_embeddings: true
+  attention:
+    kind: mha
+    n_heads: 8
+    n_kv_heads: null
+    qk_norm: false
+    dropout: 0.1
+  position:
+    kind: sinusoidal
+  ffn:
+    kind: mlp
+    activation: relu
+    mult: 4.0
+    multiple_of: 1
+  norm:
+    kind: layernorm
+    placement: post
+    eps: 1.0e-5
+  init:
+    scheme: fixed
+    std: 0.02
+    scaled_residual: false
+train:
+  precision: fp32
+  lr: 3.0e-4
+  schedule: cosine
+  warmup_steps: 200
+  max_steps: 2000
+  micro_batch_size: 16
+  seq_len: 256

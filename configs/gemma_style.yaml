@@ -1,0 +1,41 @@
+# Gemma-style profile: alternated local/global attention (5 local, 1 global),
+# QK-norm, logit softcapping, sandwich norm with (1 + w) RMSNorm, GeGLU.
+model:
+  d_model: 1024
+  n_layers: 12
+  vocab_size: 32000
+  max_seq_len: 8192
+  bias: false
+  tie_embeddings: true
+  attention:
+    kind: gqa
+    n_heads: 16
+    n_kv_heads: 4
+    qk_norm: true
+    logit_softcap: 50.0
+    sliding_window: 1024
+    global_every: 6
+  position:
+    kind: rope
+    rope_theta: 10000.0
+  ffn:
+    kind: geglu
+    multiple_of: 256
+  norm:
+    kind: rmsnorm
+    placement: sandwich
+    unit_offset: true
+    eps: 1.0e-6
+  init:
+    scheme: fixed
+    std: 0.02
+    scaled_residual: true
+train:
+  precision: fp16
+  lr: 3.0e-4
+  schedule: cosine
+  warmup_steps: 200
+  max_steps: 2000
+  micro_batch_size: 4
+  grad_accum_steps: 4
+  seq_len: 1024
