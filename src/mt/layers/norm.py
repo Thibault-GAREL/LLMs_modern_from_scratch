@@ -176,11 +176,16 @@ class QKNorm(nn.Module):
     roughly a billion parameters, and in Gemma 3 / OLMo 2 at every size).
     Separate gains for q and k, following the released implementations.
 
-    The order matters and both are defensible, so it is a flag rather than a
-    decision: normalizing *before* RoPE (the usual convention) keeps the
-    rotation acting on unit-scale vectors, normalizing *after* guarantees the
-    norm of what actually enters the dot product. Results differ, checkpoints
-    are not interchangeable between the two.
+    On the order relative to RoPE, one thing is easy to get wrong: a rotation
+    is orthogonal, so it preserves the very RMS the normalization divides by.
+    While the gains are still uniform the two orders are the *same operation*,
+    verified in ``test_qk_norm_order_is_irrelevant_at_init``. They only diverge
+    once the gains are learned and non-uniform, because a per-coordinate scale
+    does not commute with a rotation that mixes coordinates in pairs.
+
+    Both remain defensible, so it stays a flag: normalizing before RoPE is the
+    usual convention, normalizing after bounds exactly what enters the dot
+    product. Checkpoints are not interchangeable between the two.
     """
 
     def __init__(

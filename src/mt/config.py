@@ -322,6 +322,18 @@ class ModelConfig(StrictModel):
             return self.attention.head_dim
         return self.d_model // self.attention.n_heads
 
+    @property
+    def rope_head_dim(self) -> int:
+        """Dimension the rotation actually applies to.
+
+        MLA splits each head into a non-rotated and a rotated part, and only
+        the second one goes through RoPE, so the cos/sin tables must be built
+        for ``qk_rope_head_dim`` rather than for the full head.
+        """
+        if self.attention.kind == "mla":
+            return self.attention.qk_rope_head_dim
+        return self.head_dim
+
     @model_validator(mode="after")
     def _check(self) -> ModelConfig:
         if self.attention.kind != "mla" and self.attention.head_dim is None:
