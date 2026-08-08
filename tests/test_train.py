@@ -142,7 +142,8 @@ def test_gradient_accumulation_matches_a_larger_batch(tmp_path):
 def test_checkpoint_round_trips(tmp_path):
     cfg = tiny_config(ckpt_interval=1000)
     run_dir = train(cfg, out_dir=tmp_path)
-    ckpt = torch.load(run_dir / "ckpt.pt", weights_only=False)
+    # map_location so a GPU checkpoint stays loadable on a CPU-only machine
+    ckpt = torch.load(run_dir / "ckpt.pt", map_location="cpu", weights_only=False)
     assert ckpt["step"] == cfg.train.max_steps - 1
     assert "model" in ckpt and "optimizer" in ckpt
 

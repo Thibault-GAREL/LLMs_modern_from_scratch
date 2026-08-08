@@ -55,6 +55,44 @@ def test_repeat_kv_is_a_noop_for_one():
     assert repeat_kv(x, 1) is x
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA backend")
+def test_enable_gqa_still_regresses():
+    """Locks in why ``USE_SDPA_ENABLE_GQA`` is off.
+
+    ``enable_gqa=True`` should be strictly better than expanding the KV heads.
+    On torch 2.5.1 it falls back to the math backend and materializes the full
+    score matrix instead. When a torch release fixes this, the assertion below
+    fails and the flag can be turned on.
+    """
+    import gc
+
+    import torch.nn.functional as F
+
+    b, h, kv, t, d = 4, 8, 2, 1024, 64
+
+    def peak(use_gqa: bool) -> float:
+        gc.collect()
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        q = torch.randn(b, h, t, d, device="cuda", dtype=torch.float16)
+        k = torch.randn(b, kv, t, d, device="cuda", dtype=torch.float16)
+        v = torch.randn(b, kv, t, d, device="cuda", dtype=torch.float16)
+        base = torch.cuda.memory_allocated()
+        if use_gqa:
+            F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
+        else:
+            F.scaled_dot_product_attention(
+                q, repeat_kv(k, h // kv), repeat_kv(v, h // kv), is_causal=True
+            )
+        torch.cuda.synchronize()
+        return (torch.cuda.max_memory_allocated() - base) / 2**20
+
+    assert peak(use_gqa=True) > 4 * peak(use_gqa=False), (
+        "enable_gqa no longer materializes the score matrix, "
+        "set USE_SDPA_ENABLE_GQA = True and re-run bench/throughput.py"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Head layouts
 # ---------------------------------------------------------------------------

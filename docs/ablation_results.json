@@ -1,0 +1,134 @@
+{
+  "args": {
+    "steps": 600,
+    "batch": 16,
+    "seq_len": 256,
+    "lr": 0.001,
+    "seed": 0,
+    "eval_batches": 20,
+    "only": null,
+    "out": "D:\\Loisir\\Code_python\\LLM_new_methods\\docs\\ablation_results.json"
+  },
+  "results": {
+    "vanilla-2017": {
+      "val_loss": 3.988793730735779,
+      "val_ppl": 53.98973083496094,
+      "params": 4804608,
+      "active_params": 4804608,
+      "train_s": 195.70068589999573,
+      "tokens": 2457600,
+      "baseline": "",
+      "changed": "the reference"
+    },
+    "pre-norm": {
+      "val_loss": 3.4027550339698793,
+      "val_ppl": 30.04676628112793,
+      "params": 4804608,
+      "active_params": 4804608,
+      "train_s": 233.1188691999996,
+      "tokens": 2457600,
+      "baseline": "vanilla-2017",
+      "changed": "norm.placement post to pre"
+    },
+    "rmsnorm": {
+      "val_loss": 3.3794623136520388,
+      "val_ppl": 29.35498046875,
+      "params": 4801280,
+      "active_params": 4801280,
+      "train_s": 747.9396383999847,
+      "tokens": 2457600,
+      "baseline": "pre-norm",
+      "changed": "norm.kind layernorm to rmsnorm"
+    },
+    "rope": {
+      "val_loss": 2.0344672560691834,
+      "val_ppl": 7.648176193237305,
+      "params": 4804608,
+      "active_params": 4804608,
+      "train_s": 238.45426710002357,
+      "tokens": 2457600,
+      "baseline": "vanilla-2017",
+      "changed": "position sinusoidal to rope"
+    },
+    "swiglu": {
+      "val_loss": 3.987794852256775,
+      "val_ppl": 53.935821533203125,
+      "params": 4803576,
+      "active_params": 4803576,
+      "train_s": 247.06828479998512,
+      "tokens": 2457600,
+      "baseline": "vanilla-2017",
+      "changed": "ffn mlp 4d to swiglu 8/3 d"
+    },
+    "scaled-init": {
+      "val_loss": 3.988854777812958,
+      "val_ppl": 53.99302673339844,
+      "params": 4804608,
+      "active_params": 4804608,
+      "train_s": 199.82950910000363,
+      "tokens": 2457600,
+      "baseline": "vanilla-2017",
+      "changed": "init.scaled_residual off to on"
+    },
+    "modern-socle": {
+      "val_loss": 1.9591021537780762,
+      "val_ppl": 7.092955589294434,
+      "params": 4784384,
+      "active_params": 4784384,
+      "train_s": 193.78074830002151,
+      "tokens": 2457600,
+      "baseline": "vanilla-2017",
+      "changed": "all four of the above together"
+    },
+    "gqa": {
+      "val_loss": 1.9450452268123626,
+      "val_ppl": 6.993947982788086,
+      "params": 4194560,
+      "active_params": 4194560,
+      "train_s": 173.58632339996984,
+      "tokens": 2457600,
+      "baseline": "modern-socle",
+      "changed": "attention mha to gqa g=4"
+    },
+    "qk-norm": {
+      "val_loss": 1.9694889426231383,
+      "val_ppl": 7.167013168334961,
+      "params": 4784768,
+      "active_params": 4784768,
+      "train_s": 196.31803329999093,
+      "tokens": 2457600,
+      "baseline": "modern-socle",
+      "changed": "attention.qk_norm off to on"
+    },
+    "sliding-window": {
+      "val_loss": 2.0057295083999636,
+      "val_ppl": 7.431512832641602,
+      "params": 4784384,
+      "active_params": 4784384,
+      "train_s": 195.77307410002686,
+      "tokens": 2457600,
+      "baseline": "modern-socle",
+      "changed": "sliding_window 128 with a global layer every 3"
+    },
+    "moe": {
+      "val_loss": 1.9507647335529328,
+      "val_ppl": 7.034064769744873,
+      "params": 8258304,
+      "active_params": 4203264,
+      "train_s": 202.31954549998045,
+      "tokens": 2457600,
+      "baseline": "modern-socle",
+      "changed": "ffn dense to MoE, 8 experts top 2 plus 1 shared"
+    },
+    "mtp": {
+      "val_loss": 1.919339692592621,
+      "val_ppl": 6.816455841064453,
+      "params": 5702400,
+      "active_params": 5702400,
+      "train_s": 241.67267429997446,
+      "tokens": 2457600,
+      "baseline": "modern-socle",
+      "changed": "mtp_depth 0 to 1"
+    }
+  }
+}

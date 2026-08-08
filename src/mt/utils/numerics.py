@@ -60,6 +60,19 @@ def relative_error(actual: Tensor, expected: Tensor) -> float:
     return float((actual - expected).abs().max() / scale)
 
 
+def pick_device() -> torch.device:
+    """CUDA when it is genuinely usable, CPU otherwise.
+
+    ``torch.cuda.is_available()`` alone is not enough. Under
+    ``CUDA_VISIBLE_DEVICES=""`` it returns True while ``device_count()`` is 0,
+    so a model built from it lands on a phantom device and its checkpoint
+    cannot be loaded back anywhere.
+    """
+    if torch.cuda.is_available() and torch.cuda.device_count() > 0:
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
 def autocast_dtype(precision: str) -> torch.dtype | None:
     """Map a config precision string to the autocast dtype, None for fp32."""
     return {"bf16": torch.bfloat16, "fp16": torch.float16, "fp32": None}[precision]

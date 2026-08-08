@@ -84,8 +84,11 @@ class Block(nn.Module):
         *,
         cache=None,
         doc_ids: Tensor | None = None,
+        absorbed: bool = False,
     ) -> tuple[Tensor, Tensor | None]:
-        x = self.attn(x, positions, pos_scheme, cache=cache, doc_ids=doc_ids)
+        x = self.attn(
+            x, positions, pos_scheme, cache=cache, doc_ids=doc_ids, absorbed=absorbed
+        )
         out = self.ffn(x)
         if isinstance(out, tuple):  # MoE returns its auxiliary loss
             return out[0], out[1]
@@ -163,6 +166,7 @@ class Transformer(nn.Module):
         cache=None,
         doc_ids: Tensor | None = None,
         positions: Tensor | None = None,
+        absorbed: bool = False,
     ) -> tuple[Tensor, Tensor, AuxLosses]:
         """Everything up to and including the final norm, without the head.
 
@@ -172,7 +176,9 @@ class Transformer(nn.Module):
         Returns:
             ``(h, positions, aux)``.
         """
-        return self._trunk(idx, cache=cache, doc_ids=doc_ids, positions=positions)
+        return self._trunk(
+            idx, cache=cache, doc_ids=doc_ids, positions=positions, absorbed=absorbed
+        )
 
     def forward(
         self,
@@ -182,6 +188,7 @@ class Transformer(nn.Module):
         cache=None,
         doc_ids: Tensor | None = None,
         positions: Tensor | None = None,
+        absorbed: bool = False,
     ) -> tuple[Tensor, Tensor | None, AuxLosses]:
         """
         Args:
@@ -191,12 +198,14 @@ class Transformer(nn.Module):
             doc_ids: document id per token, for packed sequences.
             positions: explicit positions. Defaults to a range continuing the
                 cache, which is what makes decoding work without extra care.
+            absorbed: use the MLA inference path, where W_UK is folded into the
+                queries and W_UV into the output. Ignored by every other kind.
 
         Returns:
             ``(logits, loss, aux)``. ``loss`` is None without targets.
         """
         h, positions, aux = self._trunk(
-            idx, cache=cache, doc_ids=doc_ids, positions=positions
+            idx, cache=cache, doc_ids=doc_ids, positions=positions, absorbed=absorbed
         )
         logits = self.lm_head(h)
 
@@ -222,6 +231,7 @@ class Transformer(nn.Module):
         cache=None,
         doc_ids: Tensor | None = None,
         positions: Tensor | None = None,
+        absorbed: bool = False,
     ) -> tuple[Tensor, Tensor, AuxLosses]:
         _, t = idx.shape
         if positions is None:
@@ -246,7 +256,8 @@ class Transformer(nn.Module):
                 )
             else:
                 x, moe_aux = block(
-                    x, positions, self.pos, cache=cache, doc_ids=doc_ids
+                    x, positions, self.pos, cache=cache, doc_ids=doc_ids,
+                    absorbed=absorbed,
                 )
             if moe_aux is not None:
                 moe_losses.append(moe_aux)

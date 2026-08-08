@@ -28,7 +28,7 @@ from tqdm import tqdm
 from mt.config import Config
 from mt.model import Transformer
 from mt.optim import build_optimizer, build_scheduler
-from mt.utils.numerics import autocast_dtype, resolve_precision
+from mt.utils.numerics import autocast_dtype, pick_device, resolve_precision
 from mt.utils.seed import set_determinism
 
 
@@ -85,7 +85,7 @@ def train(cfg: Config, *, data_path: Path | None = None, out_dir: Path | None = 
     train_cfg = cfg.train
     set_determinism(train_cfg.seed)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = pick_device()
     precision = resolve_precision(train_cfg.precision, device)
     if precision != train_cfg.precision:
         print(

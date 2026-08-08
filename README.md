@@ -4,7 +4,7 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.5.1%2Bcu121-red.svg)
 ![CUDA](https://img.shields.io/badge/CUDA-12.1-76B900.svg)
 ![Pydantic](https://img.shields.io/badge/Pydantic-2.13-e92063.svg)
-![pytest](https://img.shields.io/badge/tests-297%20passed-brightgreen.svg)
+![pytest](https://img.shields.io/badge/tests-305%20passed-brightgreen.svg)
 
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Contributions](https://img.shields.io/badge/contributions-welcome-orange.svg)
@@ -21,7 +21,7 @@ It is an **ablation library, not a model**. Every component ships with a **naive
 
 The goal is to answer a question that papers rarely answer directly: **which of these techniques actually earn their complexity, and at what scale**.
 
-🚨 **Work in progress.** Milestones M0 to M6 are done and green, so the library trains and generates end to end today. Benchmarks and the ablation table land in M7, see the roadmap below.
+✅ **All seven milestones are done and green.** The library trains, generates and benchmarks end to end, and [docs/ablations.md](docs/ablations.md) reports what each component was actually worth.
 
 ---
 
@@ -197,6 +197,39 @@ The full index, with one PDF per line and the milestone that implements it, live
 
 ---
 
+## 📊 What the components were actually worth
+
+The whole point of the library. Full method, caveats and four more tables in
+**[docs/ablations.md](docs/ablations.md)**. Below: 6 layers, `d_model` 256, byte
+level, 2.46M tokens per variant, identical seed, one config field changed at a
+time.
+
+| Change from the 2017 block | val loss | effect |
+|---|---|---|
+| `vanilla-2017` | 3.9888 | reference |
+| RoPE instead of sinusoidal | 2.0345 | **-1.954** |
+| pre-norm instead of post-norm | 3.4028 | **-0.586** |
+| RMSNorm instead of LayerNorm | 3.3795 | -0.023 |
+| SwiGLU instead of ReLU 4d | 3.9878 | -0.001 |
+| scaled residual init | 3.9889 | +0.000 |
+| **all four together** | **1.9591** | **-2.030** |
+
+| Change from the modern socle | val loss | effect |
+|---|---|---|
+| GQA g=4 instead of MHA | 1.9450 | **-0.014**, with 0.6M fewer parameters |
+| MTP depth 1 | 1.9193 | **-0.040** |
+| MoE, 8 experts top 2 | 1.9508 | -0.008, for 1.7x the parameters |
+| QK-norm | 1.9695 | **+0.010** |
+| sliding window 128 | 2.0057 | **+0.047** |
+
+**Positions dominate everything else**: RoPE alone is 96% of the total gain.
+**GQA is better than free** at this scale. And the last two rows are the lesson
+the repo was built to make concrete: QK-norm and sliding window *cost* quality,
+because they solve problems a 5M parameter model does not have. A model stacking
+every brick would be slower, larger and worse than the plain socle.
+
+---
+
 ## Example Outputs
 
 The M0 test suite, which validates the config schema and every shipped profile:
@@ -293,7 +326,7 @@ The decoder block, with every switchable component and the config flag that cont
 | **M4** | SwiGLU family, fine-grained MoE, balancing, MTP heads | ✅ done, 197 tests green |
 | **M5** | Model assembly, optimizer groups, WSD schedule, training loop | ✅ done, 269 tests green |
 | **M6** | Sampling, incremental decoding, speculative decoding | ✅ done, 297 tests green |
-| **M7** | Benchmarks (KV memory, throughput) and the ablation table | ⏳ |
+| **M7** | Benchmarks (KV memory, throughput) and the ablation table | ✅ done, 305 tests green |
 
 ---
 
@@ -339,8 +372,8 @@ The decoder block, with every switchable component and the config flag that cont
 │   ├── _INDEX.md                # paper, component, config flag, milestone
 │   └── download.sh              # restores the PDFs after a clone
 │
-├── bench/                       # KV memory, throughput, ablations                (M7)
-├── docs/                        # ablations.md, mup_coord_check.md                (M7)
+├── bench/                       # KV memory, throughput, ablations, coord check   ✅
+├── docs/                        # ablations.md, taxonomy.md, mup_coord_check.md   ✅
 │
 ├── pyproject.toml
 ├── LICENSE
@@ -422,6 +455,32 @@ The PDFs are gitignored because they are heavy, this restores all 29 of them:
 ```bash
 bash papers/download.sh
 ```
+
+---
+
+## 🚫 What is not in this repo, and why
+
+Every item below matters in production. None is here, and each omission is a
+choice rather than an oversight.
+
+| Absent | Why |
+|---|---|
+| **Tensor, pipeline and expert parallelism** | Systems work, not architecture. It changes how a model is spread over devices, never what it computes. |
+| **Quantization**, post-training and quantization-aware | Compresses a finished model. Orthogonal to which components that model is built from. |
+| **Custom kernels** beyond what PyTorch ships | A fused kernel changes the memory traffic, not the result. The one exception, FlashAttention, is reachable through SDPA and the `[flash]` extra. |
+| **Post-training** entirely: supervised fine-tuning, RLHF, reasoning traces | A separate field with its own ablations. This repo stops at the pretrained model. |
+| **Tokenizer training** | Upstream of the architecture. `mt` takes token ids, and `bench/ablation.py` works on raw bytes precisely so no tokenizer choice contaminates a comparison. |
+| **Anything about closed models** | GPT, Claude and Gemini architectures are not published. What is written here comes from open-weights papers, and community inference is labelled as such. |
+
+Two more limits inside what *is* covered, stated because they would otherwise
+be discovered the hard way:
+
+  🔹 **Speculative decoding runs at batch size 1.** With a batch, each sequence
+  accepts a different number of tokens per round and the caches go ragged.
+
+  🔹 **A ring buffer cannot roll back past its window.** Speculative decoding
+  therefore cannot run on a sliding window layer beyond the window, and
+  `RingCache.rollback` raises instead of returning stale slots.
 
 ---
 

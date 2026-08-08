@@ -35,13 +35,28 @@ _SOFTCAP_WARNED = False
 # ---------------------------------------------------------------------------
 
 
+# Whether to let SDPA broadcast the KV heads itself instead of expanding them.
+#
+# In principle enable_gqa=True (PyTorch >= 2.5) is strictly better, since it
+# skips the expansion. Measured on torch 2.5.1 with B=8, H=8, KV=2, T=2048,
+# fp16, it is dramatically worse, because it falls back to the math backend and
+# materializes the whole (B, H, T, T) score matrix:
+#
+#     enable_gqa=True    +3496 MiB   100.0 ms
+#     repeat_kv + SDPA     +48 MiB    36.3 ms
+#
+# So expansion wins by 73x on memory and 2.8x on time. Flip this to True and
+# re-run bench/throughput.py once a torch release routes enable_gqa through the
+# flash and memory-efficient backends. See test_enable_gqa_still_regresses.
+USE_SDPA_ENABLE_GQA = False
+
+
 def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
     """Expand ``(B, n_kv_heads, T, D)`` to ``(B, n_kv_heads * n_rep, T, D)``.
 
     Uses ``expand`` plus ``reshape`` rather than ``repeat``, so the broadcast
-    stays a view until something forces a copy. Note that SDPA with
-    ``enable_gqa=True`` (PyTorch >= 2.5) skips the expansion entirely, which is
-    the path taken whenever no custom mask forces the naive route.
+    stays a view instead of copying. See ``USE_SDPA_ENABLE_GQA`` above for why
+    this is preferred over letting SDPA broadcast internally.
     """
     if n_rep == 1:
         return x
@@ -364,8 +379,9 @@ class Attention(nn.Module):
             t, kv_len, x.device, x.dtype, pos_scheme, doc_ids
         )
 
-        # SDPA can broadcast KV heads itself, the naive path needs them expanded
-        use_gqa = not self.needs_naive_path and self.n_rep > 1
+        use_gqa = (
+            USE_SDPA_ENABLE_GQA and not self.needs_naive_path and self.n_rep > 1
+        )
         if not use_gqa:
             k, v = repeat_kv(k, self.n_rep), repeat_kv(v, self.n_rep)
 
