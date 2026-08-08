@@ -26,7 +26,7 @@ class DummyBlock(nn.Module):
         super().__init__()
         self.lin = nn.Linear(d_model, d_model)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, *args) -> torch.Tensor:
         return x + self.lin(x)
 
 

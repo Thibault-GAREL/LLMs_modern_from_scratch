@@ -27,9 +27,9 @@ python bench/coord_check.py --steps 50 --lr 1e-3
 
 ```
 width spread after 30 steps (1.0 = perfectly width invariant)
-  standard parametrization :  31.24x
-  muP                      :   1.31x
-  muP is 23.9x flatter across widths
+  standard parametrization :  31.63x
+  muP                      :   1.03x
+  muP is 30.7x flatter across widths
 ```
 
 The spread reported is the worst ratio, across layers, between the largest and
@@ -39,10 +39,13 @@ smallest coordinate size over the four widths.
 
 | | Change | Status | Where |
 |---|---|---|---|
-| (a) | hidden matrices initialized with variance `1 / mult` | ✅ M1 | `mt/init.py` |
-| (b) | hidden matrices given a learning rate `/ mult` | ⚠️ M5 | `bench/coord_check.py` for now, `mt/optim.py` later |
-| (c) | attention scaled by `1 / head_dim` instead of `1 / sqrt(head_dim)` | ⏳ M3 | `attention.scale: mup` is validated but not yet consumed |
-| (d) | output logits multiplied by `1 / mult` | ✅ M1 | `mt/init.py` provides it, `model.py` applies it in M5 |
+| (a) | hidden matrices initialized with variance `1 / mult` | ✅ | `mt/init.py` |
+| (b) | hidden matrices given a learning rate `/ mult` | ✅ | `mt/optim.py`, `build_param_groups` |
+| (c) | attention scaled by `1 / head_dim` instead of `1 / sqrt(head_dim)` | ✅ | `mt/layers/attention.py` |
+| (d) | output logits multiplied by `1 / mult` | ✅ | `mt/layers/heads.py`, `LMHead` |
+
+All four are now exercised together, on the real `Transformer` rather than on a
+stand-in.
 
 ## What was found while building this
 
@@ -65,16 +68,16 @@ describes the linearized dynamics, and a toy model at a large learning rate
 leaves that regime immediately. This is not a bug in the implementation, but it
 does mean a coordinate check run at an aggressive learning rate proves nothing.
 
-## Known limitations of this check
+**Moving to the real model improved the result.** On the toy residual MLP the
+spread was 1.31x. On the actual `Transformer` it is 1.03x, essentially the
+ideal value. The earlier residual was therefore mostly an artefact of the
+stand-in rather than a flaw in the implementation, which is a good reminder
+that a coordinate check measures the model you actually run.
 
-The stack used here is a residual MLP with pre-norm RMSNorm, not the full
-Transformer, because `model.py` lands in M5. It exercises changes (a) and (b)
-only. Two consequences:
+## Remaining caveat
 
-- change (c) is untested, since there is no attention yet
-- the pre-norm RMSNorm normalizes activations before every linear, which is a
-  width-independent rescaling that the original muP derivation does not assume,
-  so the residual 1.31x may partly come from that interaction
-
-This script will be re-pointed at the real `Transformer` in M5, and the number
-above should be revisited then rather than trusted as final.
+The task is synthetic (predict the next token id modulo the vocabulary) and the
+model is small. A coordinate check confirms the parametrization is coherent
+across widths, it does not confirm that a learning rate tuned at the base width
+is optimal at scale. That claim needs a real learning rate sweep at two widths,
+which belongs with the ablations in M7.

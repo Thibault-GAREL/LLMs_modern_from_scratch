@@ -9,10 +9,9 @@ Run it with:
 
     python bench/coord_check.py --steps 8 --out docs/assets
 
-Note on scope: this uses a residual MLP stack, not the full Transformer, since
-``model.py`` lands in M5. It exercises muP changes (a) init and (b) learning
-rate groups. Changes (c) attention scaling and (d) the output multiplier need
-the real model and will be added to this same script then.
+Since M5 this runs on the real ``Transformer``, so all four muP changes are
+exercised at once: (a) the init, (b) the optimizer groups, (c) the ``1 /
+head_dim`` attention scale and (d) the output logit multiplier.
 """
 
 from __future__ import annotations
@@ -21,97 +20,53 @@ import argparse
 from pathlib import Path
 
 import torch
-import torch.nn.functional as F
-from torch import nn
 from tqdm import tqdm
 
-from mt.config import AttentionConfig, InitConfig, ModelConfig, MuPConfig
-from mt.init import (
-    init_weights,
-    mark_output_layer,
-    mark_residual_projection,
-    output_logit_multiplier,
-    width_multiplier,
-)
-from mt.layers.norm import RMSNorm
+from mt.config import AttentionConfig, FFNConfig, InitConfig, ModelConfig, MuPConfig, TrainConfig
+from mt.init import init_weights
+from mt.model import Transformer
+from mt.optim import build_param_groups
 from mt.utils.seed import set_determinism
 
 WIDTHS = (128, 256, 512, 1024)
 BASE_WIDTH = 128
 
 
-class Block(nn.Module):
-    def __init__(self, d_model: int) -> None:
-        super().__init__()
-        self.norm = RMSNorm(d_model)
-        self.up = nn.Linear(d_model, 4 * d_model, bias=False)
-        self.down = mark_residual_projection(nn.Linear(4 * d_model, d_model, bias=False))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x + self.down(F.gelu(self.up(self.norm(x))))
-
-
-class Stack(nn.Module):
-    """Embedding, N residual blocks, output head. Records per-layer activations."""
-
-    def __init__(self, d_model: int, n_layers: int, vocab: int, logit_mult: float = 1.0) -> None:
-        super().__init__()
-        self.embed = nn.Embedding(vocab, d_model)
-        self.blocks = nn.ModuleList(Block(d_model) for _ in range(n_layers))
-        self.norm = RMSNorm(d_model)
-        self.head = mark_output_layer(nn.Linear(d_model, vocab, bias=False))
-        self.logit_mult = logit_mult  # muP change (d)
-
-    def forward(self, idx: torch.Tensor) -> tuple[torch.Tensor, list[float]]:
-        x = self.embed(idx)
-        coords = [x.abs().mean().item()]
-        for block in self.blocks:
-            x = block(x)
-            coords.append(x.abs().mean().item())
-        return self.head(self.norm(x)) * self.logit_mult, coords
-
-
-def make_param_groups(model: nn.Module, cfg: ModelConfig, lr: float) -> list[dict]:
-    """muP change (b): hidden matrices get their learning rate divided by mult.
-
-    Embeddings, norm gains and biases keep the base learning rate, because
-    their fan-in does not grow with width.
-    """
-    mult = width_multiplier(cfg)
-    hidden, constant = [], []
-    for module in model.modules():
-        if isinstance(module, nn.Linear):
-            # Adam column of Table 8: hidden AND output weights both get lr / fan_in
-            hidden.append(module.weight)
-            if module.bias is not None:
-                constant.append(module.bias)
-        elif isinstance(module, (nn.Embedding, RMSNorm)):
-            constant.extend(p for p in module.parameters(recurse=False) if p is not None)
-
-    if not cfg.mup.enabled:
-        return [{"params": hidden + constant, "lr": lr}]
-    return [
-        {"params": hidden, "lr": lr / mult},
-        {"params": constant, "lr": lr},
-    ]
-
-
 def run_width(
     d_model: int, *, mup: bool, n_layers: int, steps: int, vocab: int, lr: float, seed: int
 ) -> list[list[float]]:
-    """Train one width, return the coordinate profile after each step."""
+    """Train the real Transformer at one width, profiling activations per layer."""
     set_determinism(seed)
+    n_heads = 8
     cfg = ModelConfig(
         d_model=d_model,
         n_layers=n_layers,
         vocab_size=vocab,
+        max_seq_len=64,
         mup=MuPConfig(enabled=mup, base_d_model=BASE_WIDTH),
-        attention=AttentionConfig(scale="mup" if mup else "1/sqrt(d)", n_heads=8, n_kv_heads=2),
+        attention=AttentionConfig(
+            kind="gqa",
+            n_heads=n_heads,
+            n_kv_heads=2,
+            scale="mup" if mup else "1/sqrt(d)",
+        ),
+        ffn=FFNConfig(kind="swiglu", multiple_of=1),
         init=InitConfig(scheme="fixed", std=0.02, scaled_residual=True),
     )
-    model = Stack(d_model, n_layers, vocab, logit_mult=output_logit_multiplier(cfg))
+    train_cfg = TrainConfig(lr=lr, max_steps=steps, warmup_steps=0)
+    model = Transformer(cfg)
     init_weights(model, cfg)
-    opt = torch.optim.AdamW(make_param_groups(model, cfg, lr), betas=(0.9, 0.95))
+    opt = torch.optim.AdamW(
+        build_param_groups(model, cfg, train_cfg), lr=lr, betas=(0.9, 0.95)
+    )
+
+    coords: list[float] = []
+
+    def record(_module, _args, output):
+        hidden = output[0] if isinstance(output, tuple) else output
+        coords.append(hidden.detach().abs().mean().item())
+
+    handles = [b.register_forward_hook(record) for b in model.blocks]
 
     # A learnable task, not random targets. muP predicts width invariance for
     # *correlated* updates, and random labels produce pure gradient noise whose
@@ -121,12 +76,15 @@ def run_width(
 
     profiles = []
     for _ in range(steps):
-        logits, coords = model(idx)
-        profiles.append(coords)
-        loss = F.cross_entropy(logits.reshape(-1, vocab), targets.reshape(-1))
+        coords.clear()
+        _, loss, _ = model(idx, targets)
+        profiles.append(list(coords))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
+
+    for h in handles:
+        h.remove()
     return profiles
 
 

@@ -77,9 +77,32 @@ class Cache(ABC):
     def reset(self) -> None:
         self.pos = [0] * self.n_layers
 
+    def rollback(self, n: int, layer_idx: int = 0) -> None:
+        """Drop the last ``n`` entries, for speculative decoding rejections.
+
+        The stored data past the new position is never read again, so only the
+        cursor has to move.
+        """
+        if n < 0 or n > self.pos[layer_idx]:
+            raise ValueError(f"cannot roll back {n} of {self.pos[layer_idx]} entries")
+        self.pos[layer_idx] -= n
+
     def seq_len(self, layer_idx: int = 0) -> int:
-        """Number of entries currently visible for this layer."""
+        """Number of entries currently visible for this layer.
+
+        Bounded by the capacity, so on a ring buffer it stops growing. Use
+        :meth:`total_seen` for absolute positions.
+        """
         return min(self.pos[layer_idx], self.capacity)
+
+    def total_seen(self, layer_idx: int = 0) -> int:
+        """Tokens processed so far, unbounded.
+
+        This is what positional encodings need. Reading ``seq_len`` instead
+        freezes RoPE at the window size on a ring buffer, which is silent and
+        wrong.
+        """
+        return self.pos[layer_idx]
 
 
 class KVCache(Cache):
@@ -134,6 +157,20 @@ class RingCache(Cache):
     @property
     def capacity(self) -> int:
         return self.window
+
+    def rollback(self, n: int, layer_idx: int = 0) -> None:
+        """Only possible while the buffer has not wrapped.
+
+        Once it has, the entries a rollback would restore have already been
+        overwritten. Speculative decoding therefore cannot run on a windowed
+        layer past the window, and saying so is better than silently returning
+        whatever happens to be in those slots.
+        """
+        if self.pos[layer_idx] - n >= self.window:
+            raise NotImplementedError(
+                "RingCache cannot roll back past the window, the entries are gone"
+            )
+        super().rollback(n, layer_idx)
 
     def update(self, layer_idx: int, a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
         if self.a[layer_idx] is None:
@@ -196,6 +233,52 @@ class LatentCache(Cache):
         self.pos[layer_idx] = pos + n
         end = self.pos[layer_idx]
         return self.a[layer_idx][:, :, :end], self.b[layer_idx][:, :, :end]
+
+
+class ModelCache:
+    """One cache per layer, addressed by layer index.
+
+    A model alternating local and global attention needs a ring buffer on the
+    windowed layers and a dense cache on the others, so a single flat cache
+    cannot describe it. This composes them and keeps the ``update`` signature
+    the attention module already expects.
+    """
+
+    def __init__(self, caches: list[Cache]) -> None:
+        self.caches = caches
+
+    def update(self, layer_idx: int, a: Tensor, b: Tensor) -> tuple[Tensor, Tensor]:
+        return self.caches[layer_idx].update(0, a, b)
+
+    def bytes_per_token(self, dtype: torch.dtype = torch.float16) -> int:
+        return sum(c.bytes_per_token(dtype) for c in self.caches)
+
+    def seq_len(self, layer_idx: int = 0) -> int:
+        return self.caches[layer_idx].seq_len(0)
+
+    def total_seen(self, layer_idx: int = 0) -> int:
+        return self.caches[layer_idx].total_seen(0)
+
+    def rollback(self, n: int) -> None:
+        for c in self.caches:
+            c.rollback(n, 0)
+
+    def reset(self) -> None:
+        for c in self.caches:
+            c.reset()
+
+    def __len__(self) -> int:
+        return len(self.caches)
+
+    def __getitem__(self, i: int) -> Cache:
+        return self.caches[i]
+
+
+def build_model_cache(cfg, *, max_len: int) -> ModelCache:
+    """Build the full per-layer cache for a model config."""
+    return ModelCache(
+        [build_cache(cfg, max_len=max_len, layer_idx=i) for i in range(cfg.n_layers)]
+    )
 
 
 def build_cache(cfg, *, max_len: int, layer_idx: int = 0) -> Cache:

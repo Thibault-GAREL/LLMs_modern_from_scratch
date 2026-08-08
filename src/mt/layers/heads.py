@@ -76,7 +76,10 @@ class MTPModule(nn.Module):
         merged = torch.cat(
             [self.norm_hidden(h_prev), self.norm_embed(future_emb)], dim=-1
         )
-        return self.block(self.proj(merged), *args, **kwargs)
+        out = self.block(self.proj(merged), *args, **kwargs)
+        # a real Block returns (hidden, moe_aux), and an MTP module has no use
+        # for a second auxiliary loss on top of its own
+        return out[0] if isinstance(out, tuple) else out
 
 
 class MTPHeads(nn.Module):
@@ -106,7 +109,12 @@ class MTPHeads(nn.Module):
         )
 
     def forward(
-        self, h: Tensor, idx: Tensor, targets: Tensor | None = None, *args, **kwargs
+        self,
+        h: Tensor,
+        idx: Tensor,
+        targets: Tensor | None = None,
+        *block_args,
+        positions: Tensor | None = None,
     ) -> tuple[list[Tensor], Tensor]:
         """Predict the next ``depth`` tokens beyond the trunk prediction.
 
@@ -116,12 +124,16 @@ class MTPHeads(nn.Module):
             targets: token ids to predict, ``(batch, seq)``. When given, the
                 loss is the mean cross entropy over depths, scaled by
                 ``mtp_lambda``.
+            block_args: forwarded to each inner block, typically the positional
+                scheme.
+            positions: sliced alongside the sequence, since depth ``k`` drops
+                the last ``k`` positions.
 
         Returns:
             ``(logits_per_depth, loss)``. Positions with no ground truth left
             at that depth are excluded rather than padded.
         """
-        b, t = idx.shape
+        _, t = idx.shape
         losses = []
         all_logits = []
         h_prev = h
@@ -132,7 +144,9 @@ class MTPHeads(nn.Module):
             # depth k predicts token t + k, so it is fed the embedding of the
             # token k steps ahead and only the positions that still have one
             future = self.embedding(idx[:, k:])
-            h_prev = module(h_prev[:, : t - k], future, *args, **kwargs)
+            sub_pos = positions[: t - k] if positions is not None else None
+            args = (sub_pos, *block_args) if sub_pos is not None else block_args
+            h_prev = module(h_prev[:, : t - k], future, *args)
             logits = self.lm_head(h_prev)
             all_logits.append(logits)
 
@@ -153,11 +167,14 @@ class MTPHeads(nn.Module):
         return all_logits, loss
 
     @torch.no_grad()
-    def draft(self, h: Tensor, idx: Tensor, *args, **kwargs) -> Tensor:
+    def draft(
+        self, h: Tensor, idx: Tensor, *block_args, positions: Tensor | None = None
+    ) -> Tensor:
         """Greedy draft of ``depth`` tokens, for speculative decoding.
 
         Takes the trunk state of the last position and walks the modules
-        forward, feeding each its own previous prediction.
+        forward, feeding each its own previous prediction. This is the cheapest
+        draft model available, because it shares the trunk it drafts for.
 
         Returns:
             ``(batch, depth)`` drafted token ids.
@@ -165,8 +182,12 @@ class MTPHeads(nn.Module):
         drafted = []
         h_prev = h[:, -1:]
         last = idx[:, -1:]
-        for module in self.modules_:
-            h_prev = module(h_prev, self.embedding(last), *args, **kwargs)
+        for step, module in enumerate(self.modules_):
+            sub_pos = (
+                positions[-1:] + step + 1 if positions is not None else None
+            )
+            args = (sub_pos, *block_args) if sub_pos is not None else block_args
+            h_prev = module(h_prev, self.embedding(last), *args)
             last = self.lm_head(h_prev).argmax(dim=-1)
             drafted.append(last)
         return torch.cat(drafted, dim=1)

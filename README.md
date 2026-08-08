@@ -4,7 +4,7 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.5.1%2Bcu121-red.svg)
 ![CUDA](https://img.shields.io/badge/CUDA-12.1-76B900.svg)
 ![Pydantic](https://img.shields.io/badge/Pydantic-2.13-e92063.svg)
-![pytest](https://img.shields.io/badge/tests-197%20passed-brightgreen.svg)
+![pytest](https://img.shields.io/badge/tests-297%20passed-brightgreen.svg)
 
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Contributions](https://img.shields.io/badge/contributions-welcome-orange.svg)
@@ -21,7 +21,7 @@ It is an **ablation library, not a model**. Every component ships with a **naive
 
 The goal is to answer a question that papers rarely answer directly: **which of these techniques actually earn their complexity, and at what scale**.
 
-🚨 **Work in progress.** Milestones M0 to M4 are done and green (config, normalization and init, positions, attention and caches, feed-forward and MoE). Assembly, training and generation land in M5 to M7, see the roadmap below.
+🚨 **Work in progress.** Milestones M0 to M6 are done and green, so the library trains and generates end to end today. Benchmarks and the ablation table land in M7, see the roadmap below.
 
 ---
 
@@ -238,7 +238,9 @@ MHA at this context does not fit on any single machine, which is the whole reaso
 
   🧭 **What context extension actually buys, measured.** Training at 2048 and serving at 8192, the slowest RoPE band reaches 1.0924 rad instead of the 0.2731 rad it ever saw, so it is extrapolating into unseen angles. Position Interpolation and YaRN both bring it back to exactly 0.2731. The difference is the cost: PI squashes all 32 frequency bands, YaRN leaves 9 of them untouched because they already completed enough periods during training. Its attention temperature comes out at 1.1386, which is `0.1 · ln(4) + 1`.
 
-  📉 **muP is width invariant to 1.31x, standard init to 31.24x.** Measured by the coordinate check over `d_model` in 128 to 1024, see [docs/mup_coord_check.md](docs/mup_coord_check.md). The spread at init alone is 1.02x, so everything above that comes from the training dynamics, not the initialization.
+  📉 **muP is width invariant to 1.03x, standard init to 31.63x.** Measured by the coordinate check over `d_model` in 128 to 1024 on the real model, see [docs/mup_coord_check.md](docs/mup_coord_check.md). Running it on a stand-in MLP instead gave 1.31x, so a coordinate check really has to measure the model you run.
+
+  ⚠️ **bf16 is requested, fp16 is used.** On a compute capability 7.5 GPU `is_bf16_supported()` returns True while bf16 is emulated and slower. `mt.utils.numerics.resolve_precision` detects this and falls back, printing why.
 
   ⚠️ **bf16 is not free on every GPU.** A GTX 1660 Ti reports `is_bf16_supported() == True`, but that is emulation, the compute capability is 7.5. The local profiles therefore use fp16, and bf16 is kept for the pod-sized MoE profile.
 
@@ -289,8 +291,8 @@ The decoder block, with every switchable component and the config flag that cont
 | **M2** | RoPE and its two conventions, YaRN, NTK, ALiBi, NoPE | ✅ done, 96 tests green |
 | **M3** | MHA, MQA, GQA, MLA with weight absorption, masks, KV caches | ✅ done, 150 tests green |
 | **M4** | SwiGLU family, fine-grained MoE, balancing, MTP heads | ✅ done, 197 tests green |
-| **M5** | Model assembly, optimizer groups, WSD schedule, training loop | ⏳ |
-| **M6** | Sampling, incremental decoding, speculative decoding | ⏳ |
+| **M5** | Model assembly, optimizer groups, WSD schedule, training loop | ✅ done, 269 tests green |
+| **M6** | Sampling, incremental decoding, speculative decoding | ✅ done, 297 tests green |
 | **M7** | Benchmarks (KV memory, throughput) and the ablation table | ⏳ |
 
 ---
@@ -311,7 +313,7 @@ The decoder block, with every switchable component and the config flag that cont
 │
 ├── src/mt/
 │   ├── config.py                # Pydantic schema, all the cross-field validation
-│   ├── model.py                 # Transformer, Block, forward and losses          (M5)
+│   ├── model.py                 # Transformer, Block, forward and losses          ✅
 │   ├── layers/
 │   │   ├── norm.py              # LayerNorm, RMSNorm, QK-Norm, DyT, placements    ✅
 │   │   ├── pos.py               # RoPE, PI, NTK, YaRN, ALiBi, NoPE                ✅
@@ -321,11 +323,12 @@ The decoder block, with every switchable component and the config flag that cont
 │   │   └── heads.py             # LM head, tied embeddings, MTP heads             ✅
 │   ├── cache.py                 # dense KV cache, SWA ring buffer, MLA latent     ✅
 │   ├── init.py                  # standard init, scaled residual init, muP        ✅
-│   ├── optim.py                 # AdamW, param groups, WSD and cosine, z-loss     (M5)
-│   ├── train.py                 # minimal training loop, grad accum, checkpoints  (M5)
-│   ├── generate.py              # sampling, KV cache, speculative decoding        (M6)
+│   ├── optim.py                 # AdamW, param groups, WSD and cosine, z-loss     ✅
+│   ├── train.py                 # minimal training loop, grad accum, checkpoints  ✅
+│   ├── generate.py              # sampling, KV cache, speculative decoding        ✅
 │   └── utils/
-│       └── seed.py              # set_determinism
+│       ├── seed.py              # set_determinism
+│       └── numerics.py          # fp32 policy, precision fallback              ✅
 │
 ├── tests/                       # Equivalence tests, naive path against fast path
 │   ├── test_config.py
@@ -374,6 +377,23 @@ pip install -e ".[dev]"
 pytest
 ```
 
+### Train a model
+
+```bash
+python -m mt.train --config configs/llama_style_150m.yaml --max-steps 200
+```
+
+Any config field can be overridden from the command line, which is how the
+shipped profiles are shrunk to fit a smaller GPU:
+
+```bash
+python -m mt.train --config configs/moe_1b_a200m.yaml   --set model.d_model=128 --set model.moe.n_experts=8 --max-steps 100
+```
+
+Every loss term is logged separately to `metrics.jsonl`, plus the routing
+entropy and per-expert load on MoE layers. Merging them into one number is how
+a collapsing router goes unnoticed.
+
 ### Load a profile
 
 ```python
@@ -381,6 +401,18 @@ from mt.config import Config
 
 cfg = Config.from_yaml("configs/llama_style_150m.yaml")
 print(cfg.model.attention.kind, cfg.model.head_dim)   # gqa 64
+```
+
+### Generate
+
+```python
+from mt.generate import SamplingConfig, generate, speculative_generate
+
+out = generate(model, prompt_ids, 128, SamplingConfig(temperature=0.8, top_p=0.9))
+
+# same output distribution as the target model, verified statistically
+out, stats = speculative_generate(target, draft, prompt_ids, 128, gamma=4)
+print(stats.acceptance_rate)
 ```
 
 ### Get the reference papers
