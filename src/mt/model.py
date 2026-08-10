@@ -21,7 +21,7 @@ from torch.utils.checkpoint import checkpoint
 from mt.config import ModelConfig
 from mt.init import init_weights
 from mt.layers.attention import Attention
-from mt.layers.ffn import build_ffn
+from mt.layers.ffn import MatFormerMLP, build_ffn
 from mt.layers.heads import LMHead, MTPHeads
 from mt.layers.moe import MoE
 from mt.layers.norm import NormedResidual, build_norm
@@ -74,6 +74,7 @@ class Block(nn.Module):
         # the lowest layers learn features every expert would need anyway
         self.uses_moe = cfg.moe.enabled and layer_idx >= cfg.moe.first_k_dense
         sublayer = MoE(cfg) if self.uses_moe else build_ffn(cfg)
+        self.is_matformer = isinstance(sublayer, MatFormerMLP)
         self.ffn = NormedResidual(cfg.norm, cfg.d_model, sublayer, bias=cfg.bias)
 
     def forward(
@@ -85,11 +86,13 @@ class Block(nn.Module):
         cache=None,
         doc_ids: Tensor | None = None,
         absorbed: bool = False,
+        granularity: float = 1.0,
     ) -> tuple[Tensor, Tensor | None]:
         x = self.attn(
             x, positions, pos_scheme, cache=cache, doc_ids=doc_ids, absorbed=absorbed
         )
-        out = self.ffn(x)
+        # MatFormer layers accept a width, every other sub-block ignores it
+        out = self.ffn(x, granularity) if self.is_matformer else self.ffn(x)
         if isinstance(out, tuple):  # MoE returns its auxiliary loss
             return out[0], out[1]
         return out, None
@@ -167,6 +170,7 @@ class Transformer(nn.Module):
         doc_ids: Tensor | None = None,
         positions: Tensor | None = None,
         absorbed: bool = False,
+        granularity: float = 1.0,
     ) -> tuple[Tensor, Tensor, AuxLosses]:
         """Everything up to and including the final norm, without the head.
 
@@ -177,7 +181,8 @@ class Transformer(nn.Module):
             ``(h, positions, aux)``.
         """
         return self._trunk(
-            idx, cache=cache, doc_ids=doc_ids, positions=positions, absorbed=absorbed
+            idx, cache=cache, doc_ids=doc_ids, positions=positions,
+            absorbed=absorbed, granularity=granularity,
         )
 
     def forward(
@@ -189,6 +194,7 @@ class Transformer(nn.Module):
         doc_ids: Tensor | None = None,
         positions: Tensor | None = None,
         absorbed: bool = False,
+        granularity: float = 1.0,
     ) -> tuple[Tensor, Tensor | None, AuxLosses]:
         """
         Args:
@@ -205,7 +211,8 @@ class Transformer(nn.Module):
             ``(logits, loss, aux)``. ``loss`` is None without targets.
         """
         h, positions, aux = self._trunk(
-            idx, cache=cache, doc_ids=doc_ids, positions=positions, absorbed=absorbed
+            idx, cache=cache, doc_ids=doc_ids, positions=positions,
+            absorbed=absorbed, granularity=granularity,
         )
         logits = self.lm_head(h)
 
@@ -232,6 +239,7 @@ class Transformer(nn.Module):
         doc_ids: Tensor | None = None,
         positions: Tensor | None = None,
         absorbed: bool = False,
+        granularity: float = 1.0,
     ) -> tuple[Tensor, Tensor, AuxLosses]:
         _, t = idx.shape
         if positions is None:
@@ -257,7 +265,7 @@ class Transformer(nn.Module):
             else:
                 x, moe_aux = block(
                     x, positions, self.pos, cache=cache, doc_ids=doc_ids,
-                    absorbed=absorbed,
+                    absorbed=absorbed, granularity=granularity,
                 )
             if moe_aux is not None:
                 moe_losses.append(moe_aux)

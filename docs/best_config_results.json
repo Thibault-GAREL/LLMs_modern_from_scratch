@@ -1,0 +1,64 @@
+{
+  "args": {
+    "steps": 600,
+    "batch": 16,
+    "seq_len": 256,
+    "lr": 0.001,
+    "seed": 0,
+    "eval_batches": 20,
+    "only": "best-candidate,best-mtp2,best-gqa8,best-plus-qknorm,everything",
+    "out": "docs\\best_config_results.json"
+  },
+  "results": {
+    "best-candidate": {
+      "val_loss": 1.8585968434810638,
+      "val_ppl": 6.414729118347168,
+      "params": 5014272,
+      "active_params": 5014272,
+      "train_s": 195.6869514999562,
+      "tokens": 2457600,
+      "baseline": "modern-socle",
+      "changed": "GQA g=4 and MTP depth 1 together"
+    },
+    "best-mtp2": {
+      "val_loss": 1.834156334400177,
+      "val_ppl": 6.25985050201416,
+      "params": 5833984,
+      "active_params": 5833984,
+      "train_s": 256.8248355000396,
+      "tokens": 2457600,
+      "baseline": "best-candidate",
+      "changed": "mtp_depth 1 to 2"
+    },
+    "best-gqa8": {
+      "val_loss": 1.828982937335968,
+      "val_ppl": 6.2275495529174805,
+      "params": 4899584,
+      "active_params": 4899584,
+      "train_s": 259.3007265999913,
+      "tokens": 2457600,
+      "baseline": "best-candidate",
+      "changed": "GQA g=4 to g=8"
+    },
+    "best-plus-qknorm": {
+      "val_loss": 1.860768014192581,
+      "val_ppl": 6.428671836853027,
+      "params": 5014720,
+      "active_params": 5014720,
+      "train_s": 300.7388971999753,
+      "tokens": 2457600,
+      "baseline": "best-candidate",
+      "changed": "adding QK-norm on top, to confirm it still costs"
+    },
+    "everything": {
+      "val_loss": 1.859969288110733,
+      "val_ppl": 6.423539161682129,
+      "params": 10697984,
+      "active_params": 6642944,
+      "train_s": 367.8021854000399,
+      "tokens": 2457600,
+      "baseline": "best-candidate",
+      "changed": "every brick at once, the counter-example"
+    }
+  }
+}

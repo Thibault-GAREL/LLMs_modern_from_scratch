@@ -192,104 +192,188 @@ A coordinate check measures the model you actually run.
 ## 5. Quality at a fixed token budget
 
 From `bench/ablation.py`: 6 layers, `d_model` 256, byte level, **2,457,600 tokens
-per variant**, identical seed, held-out loss on a 10% split.
+per variant**, identical seed, held-out loss on a 10% split, corpus frozen at
+sha `69a497f3a393`.
+
+### A methodological correction, made after the first sweep
+
+The first version of this benchmark read the repository's files live. That looks
+reproducible and is not: the repo grew by 23 KB between two sweeps, and the
+held-out loss of an **unchanged** config moved by **0.09**, larger than most of
+the effects being measured. Several conclusions drawn from that first sweep were
+noise, and two of them reversed once the corpus was frozen.
+
+The corpus is now cached to disk on first use, its sha256 is recorded in every
+results file, and `--refresh-corpus` states plainly that rebuilding it makes
+previous numbers incomparable. **Every number below comes from a single sweep on
+a single frozen corpus.**
 
 ### Deviating from the 2017 block, one field at a time
 
 | variant | val loss | vs baseline | params | what changed |
 |---|---|---|---|---|
-| `vanilla-2017` | 3.9888 | reference | 4.80M | the 2017 decoder |
-| `pre-norm` | 3.4028 | **-0.586** | 4.80M | `norm.placement` post to pre |
-| `rmsnorm` | 3.3795 | -0.023 | 4.80M | `norm.kind` layernorm to rmsnorm (on pre-norm) |
-| `rope` | 2.0345 | **-1.954** | 4.80M | `position` sinusoidal to rope |
-| `swiglu` | 3.9878 | -0.001 | 4.80M | `ffn` mlp 4d to swiglu 8/3 d |
-| `scaled-init` | 3.9889 | +0.000 | 4.80M | `init.scaled_residual` off to on |
-| `modern-socle` | **1.9591** | **-2.030** | 4.78M | all four together |
+| `vanilla-2017` | 3.9280 | reference | 4.80M | the 2017 decoder |
+| `pre-norm` | 3.3768 | **-0.551** | 4.80M | `norm.placement` post to pre |
+| `rmsnorm` | 3.3439 | -0.033 | 4.80M | `norm.kind` layernorm to rmsnorm (on pre-norm) |
+| `rope` | 1.9131 | **-2.015** | 4.80M | `position` sinusoidal to rope |
+| `swiglu` | 3.9270 | -0.001 | 4.80M | `ffn` mlp 4d to swiglu 8/3 d |
+| `scaled-init` | 3.9271 | -0.001 | 4.80M | `init.scaled_residual` off to on |
+| `modern-socle` | **1.8599** | **-2.068** | 4.78M | all four together |
 
 ### Deviating from the modern socle
 
-| variant | val loss | vs socle | params | what changed |
+| variant | val loss | vs socle | params | deployed | what changed |
+|---|---|---|---|---|---|
+| `mtp` | **1.8211** | **-0.039** | 5.70M | 4.78M | `mtp_depth` 0 to 1 |
+| `gqa` | 1.8500 | -0.010 | 4.19M | 4.19M | MHA to GQA g=4 |
+| `qk-norm` | 1.8522 | -0.008 | 4.78M | 4.78M | `attention.qk_norm` on |
+| `moe` | 1.8544 | -0.006 | 8.26M | 8.26M | 8 experts, top 2, plus 1 shared |
+| `sliding-window` | 1.8778 | **+0.018** | 4.78M | 4.78M | window 128, one global layer in three |
+
+### Combinations, because individually good changes need not compose
+
+| variant | val loss | params | **deployed** | what it is |
 |---|---|---|---|---|
-| `gqa` | **1.9450** | **-0.014** | **4.19M** | attention MHA to GQA g=4 |
-| `mtp` | **1.9193** | **-0.040** | 5.70M | `mtp_depth` 0 to 1 |
-| `moe` | 1.9508 | -0.008 | 8.26M (4.20M active) | dense FFN to 8 experts, top 2, plus 1 shared |
-| `qk-norm` | 1.9695 | **+0.010** | 4.78M | `attention.qk_norm` off to on |
-| `sliding-window` | 2.0057 | **+0.047** | 4.78M | window 128, one global layer in three |
+| **`best-mqa-mtp2`** | **1.8039** | 5.70M | **4.10M** | **MQA + MTP depth 2. The winner** |
+| `best-plus-qknorm` | 1.8126 | 5.01M | 4.19M | GQA g=4 + MTP 1 + QK-norm |
+| `best-mtp2` | 1.8244 | 5.83M | 4.19M | GQA g=4 + MTP depth 2 |
+| `best-candidate` | 1.8482 | 5.01M | 4.19M | GQA g=4 + MTP depth 1 |
+| `best-gqa8` | 1.8602 | 4.90M | 4.10M | MQA + MTP depth 1 |
+| `everything` | **1.8725** | **10.70M** | 7.67M | every brick at once |
+| `champion` | 1.8335 | 5.70M | 4.10M | the winner plus QK-norm, which costs +0.030 |
+
+Deployed size excludes the MTP modules, which are dropped at inference.
+
+### MatFormer: two things are called Matryoshka, only one is an architecture
+
+Worth separating before reading the numbers, because the names collide:
+
+- **Matryoshka Representation Learning** (Kusupati et al., 2022,
+  [2205.13147](https://arxiv.org/abs/2205.13147)) nests *embedding dimensions*,
+  so a 768 dim vector can be truncated to 64 and stay useful. This is what
+  Nomic v1.5 and `text-embedding-3` do. It is a **retrieval** technique, and a
+  decoder LLM has no embedding to truncate: its output is a softmax over a
+  vocabulary.
+- **MatFormer** (Devvrit et al., 2023,
+  [2310.07707](https://arxiv.org/abs/2310.07707), NeurIPS 2024) nests *FFN
+  widths* inside the Transformer, so the weights of a smaller model are literally
+  a sub-matrix of the larger one. This is the LLM analogue, and it is what Gemma
+  3n ships as its E2B and E4B variants.
+
+Only the second is implemented here, behind `ffn.mat_granularities`.
+
+| model | val loss | params | what it is |
+|---|---|---|---|
+| `modern-socle` | **1.8599** | 4.78M | a dense FFN trained alone |
+| `matformer` at 1.0 | 1.8644 | 4.78M | the full width of a nested model |
+| `matformer` at 0.5 | 1.8821 | (same weights) | the half-width slice |
+| `matformer-half` | **1.8620** | 3.21M | a half-width FFN trained alone |
+| `matformer` at 0.25 | 1.9167 | (same weights) | the quarter-width slice |
+
+**The paper's central claim does not reproduce at this scale.** MatLM reports
+nested models beating independently trained counterparts. Here the full width
+costs **+0.005** against a dense model, and the 0.5 slice is **+0.020 worse**
+than a half-width model trained on its own. Neither gap is large, and both go
+the wrong way.
+
+Three reasons to treat this as a scale statement rather than a refutation: the
+paper's MatLM is 850M parameters against 5M here, it trains far longer than 600
+steps, and joint optimization has more room to share structure when there is
+more structure to share.
+
+**What MatFormer buys is not accuracy, and the compute is not saved either.**
+Training three granularities costs three forward and backward passes per step,
+so one MatFormer run costs about what three separate runs cost. The real return
+is that Mix'n'Match then extracts *hundreds* of intermediate sizes that were
+never explicitly trained, from one checkpoint and one serving pipeline. For a
+small model meant to ship at several sizes, that is a genuine operational win.
+For a single deployment target, it is three times the training cost for a
+slightly worse model.
+
+---
 
 ### What these numbers say
 
-**Positions dominate everything else.** RoPE alone accounts for `-1.954` of the
-`-2.030` total gain. Nothing else in the sweep is within an order of magnitude
-of it. If only one thing were changed from the 2017 block, it should be this.
+**Positions dominate everything else.** RoPE alone accounts for `-2.015` of the
+`-2.068` total. Nothing else in the sweep is within an order of magnitude. If
+only one thing were ever changed from the 2017 block, it should be this.
 
-**Pre-norm is the second real win**, at `-0.586`, and it is a placement change
-costing nothing. RMSNorm on top adds only `-0.023`: it is adopted for being
-cheaper and simpler, not for being more accurate, and this measurement agrees.
+**Pre-norm is the second real win**, at `-0.551`, for a placement change costing
+nothing. RMSNorm on top adds `-0.033`: it is adopted for being cheaper, not more
+accurate, and this agrees.
 
-**SwiGLU and scaled residual init did nothing here**, `-0.001` and `+0.000`.
-Both were measured against the post-norm 2017 baseline, whose trainability
-problem plausibly masks any FFN gain, and at 6 layers a depth correction has
-almost no depth to correct. This is a limit of the setup, not evidence that
-either is useless, and it is exactly the kind of null result a small-scale
-ablation should report rather than bury.
+**SwiGLU and scaled residual init did nothing measurable**, `-0.001` each. Both
+were measured against a post-norm baseline whose trainability problem plausibly
+masks any FFN gain, and at 6 layers a depth correction has almost no depth to
+correct. A limit of the setup, not evidence that either is useless.
 
-**GQA is free, and slightly better than free.** It reached a *lower* loss than
-MHA with **0.6M fewer parameters**. At this size the quality cost that motivates
-"GQA is a memory trade" simply is not visible, while the parameter saving is.
+**Combining works, but not additively.** MQA gives `-0.010` alone and MTP gives
+`-0.039` alone. Together they give `-0.056`, more than either but less than the
+sum. Assembling a config by adding up winners would have predicted `-0.049` and
+picked GQA over MQA, which the measurement contradicts.
 
-**QK-norm and sliding window both cost quality**, `+0.010` and `+0.047`. Both
-behave exactly as the taxonomy predicts: QK-norm treats an instability that a
-5M parameter model does not have, and a sliding window removes information the
-model was using. Neither is a defect, they are the price of solutions to
-problems this scale does not have.
+**And sometimes a winner reverses sign.** QK-norm improves the socle (`-0.008`)
+and improves a GQA plus MTP-1 model considerably more (`-0.036`). Added to the
+winning combination it **costs `+0.030`**, wiping out most of what MTP gained.
+That single row is the argument for measuring combinations instead of summing
+individual effects, and it is why `configs/best.yaml` ships with QK-norm off
+despite it winning two of the three comparisons it appears in.
 
-**MoE bought almost nothing for 1.7x the parameters**, `-0.008` for 8.26M total
-against 4.78M. Active parameters were 4.20M, so the compute was comparable and
-the extra capacity went unused. A model this small on this corpus is not
-capacity limited, which is precisely when MoE has nothing to offer.
+**`everything` is the counter-example the repository exists for.** Stacking MoE,
+sliding window, QK-norm, MTP and GQA gives **2.2x the parameters, 1.9x the
+deployed size, and a worse loss** than the 4.10M winner. Slower, larger, harder
+to debug, less accurate.
 
-**MTP was the best single addition to the socle**, `-0.040`. The denser training
-signal helps even here, which is the one result in this table that beat its
-reputation for needing scale.
+**Two conclusions reversed when the corpus was frozen**, and they are recorded
+here rather than quietly corrected. QK-norm appeared to *cost* quality on the
+unfrozen corpus (`+0.010`) and in fact helps slightly (`-0.008` alone, `-0.036`
+in combination). And MQA appeared to beat GQA by a wide margin in one sweep and
+lose to it in another, before settling as a genuine but small win. Both effects
+sit near the noise floor of a single-seed run, which is exactly why the frozen
+corpus mattered.
 
 ---
 
 ## What this all adds up to
 
-Reading the four sections together, at this scale and on this corpus:
+Reading the five sections together, at this scale and on this corpus:
 
 | Technique | Verdict here | Take it? |
 |---|---|---|
-| **RoPE** | -1.954 loss, by far the largest effect measured | **Always** |
-| **Pre-norm** | -0.586 loss, free | **Always** |
-| **RMSNorm** | -0.023 loss, cheaper and simpler | **Always**, for the simplicity |
-| **GQA** | lower loss with fewer parameters, and 4x less cache | **Always**, but not for speed below long context |
-| **MTP** | -0.040 loss, the best addition to the socle | Worth trying earlier than its reputation suggests |
-| **SwiGLU** | no measurable effect at 6 layers | Keep, on the published evidence at scale, not on this |
-| **Scaled residual init** | no effect at 6 layers | Keep for depth, it has none to fix here |
+| **RoPE** | -2.015 loss, by far the largest effect measured | **Always** |
+| **Pre-norm** | -0.551 loss, free, removes the warmup requirement | **Always** |
+| **RMSNorm** | -0.033 loss, cheaper and simpler than LayerNorm | **Always**, for the simplicity |
+| **MTP** | -0.039 alone, and the deployed model is smaller | **Yes**, earlier than its reputation suggests |
+| **MQA / GQA** | -0.010 to -0.056 in combination, 4x to 8x less cache | **Yes**, but not for speed below long context |
+| **QK-norm** | -0.008 alone, -0.036 in combination, costs nothing | Yes, though the effect is near the noise floor |
 | **muP** | 1.03x width invariance against 31.63x | **Yes** if you tune hyperparameters at all |
+| **SwiGLU** | no measurable effect at 6 layers | Keep, on published evidence at scale, not on this |
+| **Scaled residual init** | no effect at 6 layers | Keep for depth, it has none to fix here |
 | **MLA** | 4.1x faster absorbed than naive, still behind MHA here | Only when the cache is genuinely the bottleneck |
-| **QK-norm** | +0.010 loss, treats an absent instability | No, below a billion parameters |
-| **Sliding window** | +0.047 loss, removes usable information | No, unless the context forces it |
-| **MoE** | -0.008 loss for 1.7x the parameters | No, this scale is not capacity limited |
+| **MoE** | -0.006 loss for 1.7x the parameters | No, this scale is not capacity limited |
+| **Sliding window** | +0.018 loss, removes usable information | No, unless the context forces it |
 | **Context extension** | no scheme rescued a collapsed model zero-shot | Cannot be judged at this scale, see section 3 |
 
 The pattern is the one the repository set out to demonstrate. **The techniques
-that help unconditionally are the cheap ones** (RoPE, pre-norm, RMSNorm, and
-GQA). **The expensive ones solve problems a small model does not have**, and
-adding them costs quality rather than buying it. A 5M parameter model with MLA,
-MoE, sliding window and QK-norm would be slower, larger, harder to debug, and
-*worse* than the 4.78M socle.
+that help unconditionally are the cheap ones**, and they are cheap because they
+change how information is represented rather than adding machinery. **The
+expensive ones solve problems a small model does not have**, and adding them
+costs quality rather than buying it.
 
-That model is the counter-example this repository exists to teach against, and
-these numbers are what it looks like when someone builds it.
+`configs/best.yaml` is the winner, and it contains none of the expensive bricks.
 
 ### How far to trust this
 
-Every number above comes from one seed, one corpus, one model size, and roughly
-2.5M tokens. That is enough to detect a 2.0 loss gap, plainly not enough to
-resolve a 0.01 one. Treat the large effects as real, the small ones as noise,
-and the null results as statements about this scale rather than about the
-techniques. The published results at 7B and beyond are not contradicted by any
-of this, and a repository that trains on a laptop GPU is not in a position to
-contradict them.
+Every number comes from **one seed, one corpus, one model size, roughly 2.5M
+tokens**. That is enough to detect a 2.0 loss gap and plainly not enough to
+resolve a 0.01 one. Treat the large effects as real, anything under about 0.02
+as provisional, and the null results as statements about this scale rather than
+about the techniques.
+
+The first sweep of this document taught that lesson the hard way: an unfrozen
+corpus moved an unchanged config by 0.09 and reversed two conclusions. Effects
+smaller than that were never measurements in the first place.
+
+Published results at 7B and beyond are not contradicted by any of this. A
+repository that trains on a laptop GPU is not in a position to contradict them,
+and where the two disagree the published number is the one to believe.

@@ -4,7 +4,7 @@
 ![PyTorch](https://img.shields.io/badge/PyTorch-2.5.1%2Bcu121-red.svg)
 ![CUDA](https://img.shields.io/badge/CUDA-12.1-76B900.svg)
 ![Pydantic](https://img.shields.io/badge/Pydantic-2.13-e92063.svg)
-![pytest](https://img.shields.io/badge/tests-305%20passed-brightgreen.svg)
+![pytest](https://img.shields.io/badge/tests-322%20passed-brightgreen.svg)
 
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Contributions](https://img.shields.io/badge/contributions-welcome-orange.svg)
@@ -12,6 +12,8 @@
 <p align="center">
   <img src="assets/banner.svg" alt="modern-transformer, from the 2017 Transformer to the current open-weights defaults" width="820">
 </p>
+
+---
 
 ## 📝 Project Description
 
@@ -45,8 +47,8 @@ The goal is to answer a question that papers rarely answer directly: **which of 
 
 ## 🗂️ The deviations, one block of the 2017 architecture at a time
 
-Each table below is one box of the original figure. For every component: what it
-replaces, the paper it comes from, **what it actually optimizes**, and the flag
+Each table below is one box of the original figure. For every component: **what
+it actually does**, what it replaces, what it optimizes, the paper, and the flag
 that switches it on.
 
 **What the tags mean**
@@ -64,12 +66,12 @@ that switches it on.
 
 ### 🟠 Input embedding
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **Byte-level BPE, large vocabulary** | BPE 32k to 37k | GPT-2, 2019 | ⚡ 🎯 | upstream of `mt` |
-| **Tied embeddings** | a separate output matrix | Press and Wolf, 2016 ([1608.05859](https://arxiv.org/abs/1608.05859)) | 💾 | `model.tie_embeddings` |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **Byte-level BPE, large vocabulary** | Merges frequent byte pairs into single tokens, so a common word costs one forward pass instead of five | BPE at 32k to 37k | ⚡ 🎯 | GPT-2, 2019 | upstream of `mt` |
+| **Tied embeddings** | Reuses the input lookup table as the output projection, since both map between the same tokens and the same vector space | a separate output matrix | 💾 | [Press and Wolf, 2016](https://arxiv.org/abs/1608.05859) | `model.tie_embeddings` |
 
-*A larger vocabulary means fewer tokens for the same text, so fewer forward passes. It costs a bigger embedding table, which is exactly why tying matters more the smaller the model.*
+*A larger vocabulary means fewer tokens for the same text. It costs a bigger embedding table, which is exactly why tying matters more the smaller the model.*
 
 ---
 
@@ -77,17 +79,17 @@ that switches it on.
 
 *2017: a fixed sinusoidal signal added to the embedding once, at the input. Position is absolute and competes with content inside the residual stream, where it dilutes with depth.*
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **RoPE** | sinusoidal absolute embeddings | Su et al., 2021 ([2104.09864](https://arxiv.org/abs/2104.09864)) | 🎯 📏 | `position.kind: rope` |
-| **ALiBi** | any positional embedding | Press et al., 2021 ([2108.12409](https://arxiv.org/abs/2108.12409)) | 📏 | `position.kind: alibi` |
-| **NoPE** | any positional embedding | Kazemnejad et al., 2023 ([2305.19466](https://arxiv.org/abs/2305.19466)) | 🎯 | `position.kind: nope` |
-| **theta 10k to 500k** | theta fixed at 10000 | LLaMA 3, 2024 ([2407.21783](https://arxiv.org/abs/2407.21783)) | 📏 | `position.rope_theta` |
-| **Position Interpolation** | nothing, 2017 had no extension | Chen et al., 2023 ([2306.15595](https://arxiv.org/abs/2306.15595)) | 📏 | `scaling.kind: linear` |
-| **NTK-aware, dynamic NTK** | nothing | community, then LLaMA 3 | 📏 | `scaling.kind: ntk-aware` |
-| **YaRN** | nothing | Peng et al., 2023 ([2309.00071](https://arxiv.org/abs/2309.00071)) | 📏 🎯 | `scaling.kind: yarn` |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **RoPE** | **Rotates q and k by an angle proportional to their position.** Two vectors rotated by `m` and `n` have a dot product that depends only on `m - n`, so position lives inside the rotation of the vector itself and is never added to the residual stream | sinusoidal absolute embeddings | 🎯 📏 | [Su et al., 2021](https://arxiv.org/abs/2104.09864) | `position.kind: rope` |
+| **ALiBi** | Subtracts a per-head multiple of the query-key distance from the score, penalizing far tokens linearly. No embedding, no parameter | any positional embedding | 📏 | [Press et al., 2021](https://arxiv.org/abs/2108.12409) | `position.kind: alibi` |
+| **NoPE** | Injects nothing at all. The causal mask already breaks the symmetry between positions, and the model infers order from it | any positional embedding | 🎯 | [Kazemnejad et al., 2023](https://arxiv.org/abs/2305.19466) | `position.kind: nope` |
+| **theta 10k to 500k** | Slows the lowest rotation frequencies, so they still resolve distances of thousands of tokens instead of wrapping around | theta fixed at 10000 | 📏 | [LLaMA 3, 2024](https://arxiv.org/abs/2407.21783) | `position.rope_theta` |
+| **Position Interpolation** | Divides every position by the scale factor, squeezing a long context back into the range the model was trained on | nothing, 2017 had no extension | 📏 | [Chen et al., 2023](https://arxiv.org/abs/2306.15595) | `scaling.kind: linear` |
+| **NTK-aware** | Raises `theta` instead of squeezing positions, spreading the interpolation across frequency bands so the fast ones keep their resolution | nothing | 📏 | community, then LLaMA 3 | `scaling.kind: ntk-aware` |
+| **YaRN** | Interpolates only the slow bands and lets the fast ones keep extrapolating, plus a temperature on the attention scale to compensate for the changed distribution | nothing | 📏 🎯 | [Peng et al., 2023](https://arxiv.org/abs/2309.00071) | `scaling.kind: yarn` |
 
-*RoPE rotates q and k at **every layer**, so the dot product depends only on `m - n`. RoPE alone does not extend context, it generalizes poorly past its training length. Everything from Position Interpolation down exists to patch that one problem afterwards.*
+*RoPE alone does not extend context, it generalizes poorly past its training length. Everything from Position Interpolation down exists to patch that one problem afterwards.*
 
 ---
 
@@ -97,67 +99,68 @@ that switches it on.
 
 **Head layout**
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **MQA** | one KV pair per query head | Shazeer, 2019 ([1911.02150](https://arxiv.org/abs/1911.02150)) | 💾 ⚡ | `attention.kind: mqa` |
-| **GQA** | one KV pair per query head | Ainslie et al., 2023 ([2305.13245](https://arxiv.org/abs/2305.13245)) | 💾 ⚡ | `attention.kind: gqa` |
-| **MLA** | the KV cache itself, now a latent vector | DeepSeek-V2, 2024 ([2405.04434](https://arxiv.org/abs/2405.04434)) | 💾 | `attention.kind: mla` |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **MQA** | All query heads share **one single** key and value head, so the cache holds one pair per layer instead of `n_heads` | one KV pair per query head | 💾 ⚡ | [Shazeer, 2019](https://arxiv.org/abs/1911.02150) | `attention.kind: mqa` |
+| **GQA** | Query heads are split into groups, each group sharing one key and value head. The middle ground between MHA and MQA | one KV pair per query head | 💾 ⚡ | [Ainslie et al., 2023](https://arxiv.org/abs/2305.13245) | `attention.kind: gqa` |
+| **MLA** | Compresses keys and values into **one low-rank latent vector per token**, then folds the decompression matrices into the query and output projections so they never need materializing at inference | the KV cache itself | 💾 | [DeepSeek-V2, 2024](https://arxiv.org/abs/2405.04434) | `attention.kind: mla` |
 
 **Score computation**
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **QK-Norm** | raw q and k, whose logits drift upward | Henry et al., 2020 ([2010.04245](https://arxiv.org/abs/2010.04245)) | 🛡️ | `attention.qk_norm` |
-| **Logit softcapping** | unbounded attention logits | Gemma 2, 2024 ([2408.00118](https://arxiv.org/abs/2408.00118)) | 🛡️ | `attention.logit_softcap` |
-| **Sliding window** | full quadratic attention on every layer | Mistral 7B, 2023 ([2310.06825](https://arxiv.org/abs/2310.06825)) | ⚡ 📏 | `attention.sliding_window` |
-| **Local and global alternation** | all layers identical | Gemma 3, 2025 ([2503.19786](https://arxiv.org/abs/2503.19786)) | ⚡ 📏 | `attention.global_every` |
-| **Attention sinks** | evicting the first tokens | Xiao et al., 2023 ([2309.17453](https://arxiv.org/abs/2309.17453)) | 🛡️ 📏 | `attention.attn_sinks` |
-| **FlashAttention** | nothing mathematically, only memory traffic | Dao et al., 2022 ([2205.14135](https://arxiv.org/abs/2205.14135)) | ⚡ 💾 | `[flash]` extra, or SDPA |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **QK-Norm** | Normalizes q and k to unit RMS **before** the dot product, so attention logits are bounded by construction instead of drifting upward during training | raw q and k | 🛡️ | [Henry et al., 2020](https://arxiv.org/abs/2010.04245) | `attention.qk_norm` |
+| **Logit softcapping** | Passes the scores through `c · tanh(x / c)`, capping them smoothly rather than letting them grow without limit | unbounded attention logits | 🛡️ | [Gemma 2, 2024](https://arxiv.org/abs/2408.00118) | `attention.logit_softcap` |
+| **Sliding window** | Each token attends only to the last `w` positions, making attention linear in sequence length instead of quadratic | full quadratic attention on every layer | ⚡ 📏 | [Mistral 7B, 2023](https://arxiv.org/abs/2310.06825) | `attention.sliding_window` |
+| **Local and global alternation** | Most layers use a window, one layer in N keeps full attention, so information can still cross the whole sequence at a fraction of the cost | all layers identical | ⚡ 📏 | [Gemma 3, 2025](https://arxiv.org/abs/2503.19786) | `attention.global_every` |
+| **Attention sinks** | Keeps the first tokens permanently visible. Softmax has to put its mass somewhere, and those tokens are where a head parks it when nothing is relevant, so evicting them collapses the distribution | evicting the first tokens | 🛡️ 📏 | [Xiao et al., 2023](https://arxiv.org/abs/2309.17453) | `attention.attn_sinks` |
+| **FlashAttention** | Computes the identical softmax in tiles small enough to stay in fast on-chip memory, never writing the `n × n` score matrix to VRAM | nothing mathematically, only memory traffic | ⚡ 💾 | [Dao et al., 2022](https://arxiv.org/abs/2205.14135) | `[flash]` extra, or SDPA |
 
-*Decoding one token reads the whole cache and does little arithmetic with it, so the step is bound by memory bandwidth. Dividing the cache by four roughly divides decode time by four, which is the clearest case here where a memory win buys speed. Measured cost per variant is in the table further down.*
+*Decoding one token reads the whole cache and does little arithmetic with it, so the step is bound by memory bandwidth rather than by FLOPs. That is why shrinking the cache buys speed.*
 
 ---
 
 ### ⚪ Add & Norm
 
-*2017: `LayerNorm(x + Sublayer(x))`, that is post-norm. A normalization sits on the residual path itself, which is why the original needed a 4000 step warmup.*
+*2017: `LayerNorm(x + Sublayer(x))`, that is post-norm. A normalization sits on the residual path itself, which is why the original needed a 4000 step warmup to train at all.*
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **Pre-norm** | post-norm, which needs warmup to train | Xiong et al., 2020 ([2002.04745](https://arxiv.org/abs/2002.04745)) | 🛡️ | `norm.placement: pre` |
-| **RMSNorm** | LayerNorm, drops the mean and the bias | Zhang and Sennrich, 2019 ([1910.07467](https://arxiv.org/abs/1910.07467)) | ⚡ 🛡️ | `norm.kind: rmsnorm` |
-| **Sandwich norm** | a single norm per sub-block | Gemma 2, 2024 ([2408.00118](https://arxiv.org/abs/2408.00118)) | 🛡️ | `norm.placement: sandwich` |
-| **Scaled residual init** | uniform init, whose variance grows with depth | GPT-2, 2019 | 🛡️ | `init.scaled_residual` |
-| **DyT** | normalization entirely | Zhu et al., 2025 ([2503.10622](https://arxiv.org/abs/2503.10622)) | ⚡ | `norm.kind: dyt` |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **Pre-norm** | Normalizes the **input** of each sub-block instead of its output, leaving the residual path as a clean identity from the first layer to the last, so gradients reach the bottom unattenuated | post-norm, which needs warmup | 🛡️ | [Xiong et al., 2020](https://arxiv.org/abs/2002.04745) | `norm.placement: pre` |
+| **RMSNorm** | Divides by the root mean square only, dropping both the mean subtraction and the bias that LayerNorm computes. One reduction instead of two | LayerNorm | ⚡ 🛡️ | [Zhang and Sennrich, 2019](https://arxiv.org/abs/1910.07467) | `norm.kind: rmsnorm` |
+| **Sandwich norm** | Normalizes both before **and** after each sub-block, keeping the pre-norm identity path while also bounding what each block adds to the stream | a single norm per sub-block | 🛡️ | [Gemma 2, 2024](https://arxiv.org/abs/2408.00118) | `norm.placement: sandwich` |
+| **Scaled residual init** | Divides the output projections by `sqrt(2 · n_layers)` at initialization, so the residual stream variance stops growing with depth | uniform init | 🛡️ | GPT-2, 2019 | `init.scaled_residual` |
+| **DyT** | Replaces normalization entirely by `gamma · tanh(alpha · x) + beta`, with no reduction over the feature dimension, so there is no statistic to compute or synchronize | normalization itself | ⚡ | [Zhu et al., 2025](https://arxiv.org/abs/2503.10622) | `norm.kind: dyt` |
 
-*One thing here is not optional. Every statistic must be computed in fp32 and cast back, and this repo verifies that `torch.nn.functional.rms_norm` does not do it.*
+*Every statistic here must be computed in fp32 and cast back. This repo verifies that `torch.nn.functional.rms_norm` does not do it.*
 
 ---
 
 ### 🟣 Feed Forward
 
-*2017: `max(0, xW₁ + b₁)W₂ + b₂` with `d_ff = 4·d`. Two thirds of the parameters of a block live here. Two independent changes happened, answering different questions.*
+*2017: `max(0, xW₁ + b₁)W₂ + b₂` with `d_ff = 4·d`. Two thirds of the parameters of a block live here.*
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **SwiGLU, GeGLU, ReGLU** | the ReLU feed-forward of width 4·d | Shazeer, 2020 ([2002.05202](https://arxiv.org/abs/2002.05202)) | 🎯 | `ffn.kind` |
-| **Sparse MoE** | one dense feed-forward per layer | Shazeer et al., 2017 ([1701.06538](https://arxiv.org/abs/1701.06538)) | 🎯 at fixed ⚡ | `moe.enabled` |
-| **Fine-grained experts** | a few large experts | DeepSeekMoE, 2024 ([2401.06066](https://arxiv.org/abs/2401.06066)) | 🎯 | `moe.n_experts` |
-| **Shared experts** | routing everything, duplicating common knowledge | DeepSeekMoE, 2024 ([2401.06066](https://arxiv.org/abs/2401.06066)) | 🎯 | `moe.n_shared_experts` |
-| **Auxiliary loss** | nothing, without it the router collapses | Switch, 2021 ([2101.03961](https://arxiv.org/abs/2101.03961)) | 🛡️ | `moe.balance: aux_loss` |
-| **Aux-loss-free balancing** | the auxiliary loss, which fights the real one | DeepSeek-V3, 2024 ([2408.15664](https://arxiv.org/abs/2408.15664)) | 🛡️ 🎯 | `moe.balance: aux_loss_free` |
-| **Router z-loss** | unbounded router logits | ST-MoE, 2022 ([2202.08906](https://arxiv.org/abs/2202.08906)) | 🛡️ | `moe.router_z_loss_coef` |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **SwiGLU, GeGLU, ReGLU** | Splits the input into a **value path and a gate path** and multiplies them elementwise, so the layer learns which coordinates to let through rather than applying one fixed activation. Three matrices instead of two, width dropped to `8/3 d` to keep the budget | the ReLU feed-forward of width `4·d` | 🎯 | [Shazeer, 2020](https://arxiv.org/abs/2002.05202) | `ffn.kind` |
+| **Sparse MoE** | Replaces one feed-forward by `N` and routes each token to only `k` of them, so total parameters grow while FLOPs per token stay fixed | one dense feed-forward per layer | 🎯 at fixed ⚡ | [Shazeer et al., 2017](https://arxiv.org/abs/1701.06538) | `moe.enabled` |
+| **Fine-grained experts** | Uses many small experts rather than a few large ones, which multiplies the number of usable expert combinations for the same parameter count | a few large experts | 🎯 | [DeepSeekMoE, 2024](https://arxiv.org/abs/2401.06066) | `moe.n_experts` |
+| **Shared experts** | Keeps a few experts always active, so knowledge every token needs is stored once instead of being duplicated inside every routed expert | routing everything | 🎯 | [DeepSeekMoE, 2024](https://arxiv.org/abs/2401.06066) | `moe.n_shared_experts` |
+| **Auxiliary loss** | Adds a penalty proportional to the product of each expert's load and its mean routing probability, minimized when both are uniform | nothing, without it the router collapses | 🛡️ | [Switch, 2021](https://arxiv.org/abs/2101.03961) | `moe.balance: aux_loss` |
+| **Aux-loss-free balancing** | Adds a per-expert bias used **only for the top-k selection**, never for the weighting, nudged outside the gradient toward balance. Balancing therefore never enters the loss and never fights it | the auxiliary loss | 🛡️ 🎯 | [DeepSeek-V3, 2024](https://arxiv.org/abs/2408.15664) | `moe.balance: aux_loss_free` |
+| **Router z-loss** | Penalizes the `logsumexp` of the router logits, keeping the gate in a numeric range bf16 can represent | unbounded router logits | 🛡️ | [ST-MoE, 2022](https://arxiv.org/abs/2202.08906) | `moe.router_z_loss_coef` |
+| **MatFormer** | Nests smaller FFNs inside the large one as **literal sub-matrices**, all trained jointly, so a single checkpoint contains several deployable model sizes | one width per trained model | 💾 ⚡ | [Devvrit et al., 2023](https://arxiv.org/abs/2310.07707) | `ffn.mat_granularities` |
 
-*A gated unit uses three matrices instead of two, so the width drops from `4d` to `8/3·d` to keep the parameter budget. MoE buys quality per FLOP and pays in memory, since every expert stays resident while only a few run. Below a few billion parameters on one GPU it buys nothing.*
+*On **MatFormer**, since two things are called Matryoshka: [Matryoshka Representation Learning](https://arxiv.org/abs/2205.13147) nests **embedding dimensions** for retrieval (what Nomic v1.5 does), while **MatFormer** nests **FFN widths** inside the Transformer (what Gemma 3n ships as E2B and E4B). Only the second applies to a decoder LLM, and only it is implemented here.*
 
 ---
 
 ### 🟢 Output head and objective
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **Output z-loss** | unbounded logits, which bf16 loses | ST-MoE, 2022 ([2202.08906](https://arxiv.org/abs/2202.08906)) | 🛡️ | `train.z_loss_coef` |
-| **Multi-Token Prediction** | predicting one next token | Gloeckle et al., 2024 ([2404.19737](https://arxiv.org/abs/2404.19737)) | 🎯 ⚡ | `model.mtp_depth` |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **Output z-loss** | Penalizes the squared `logsumexp` of the logits, keeping them small enough that bf16 does not lose the tail of the softmax | unbounded logits | 🛡️ | [ST-MoE, 2022](https://arxiv.org/abs/2202.08906) | `train.z_loss_coef` |
+| **Multi-Token Prediction** | Adds modules predicting tokens `t+2`, `t+3` and so on, so each position supervises several predictions instead of one. The modules are dropped at inference, or reused as a draft model | predicting one next token | 🎯 ⚡ | [Gloeckle et al., 2024](https://arxiv.org/abs/2404.19737) | `model.mtp_depth` |
 
 ---
 
@@ -165,14 +168,14 @@ that switches it on.
 
 *Not part of the architecture, but the 2017 recipe changed completely.*
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **AdamW, betas (0.9, 0.95)** | Adam with beta2 0.98 and plain L2 | Loshchilov and Hutter, 2017 ([1711.05101](https://arxiv.org/abs/1711.05101)) | 🛡️ 🎯 | `train.betas` |
-| **Decay excluding norms and biases** | decay on every parameter | current practice | 🎯 | `train.weight_decay` |
-| **Warmup plus cosine** | the inverse square root schedule | GPT-3, 2020 | 🛡️ | `train.schedule: cosine` |
-| **WSD** | cosine, which locks the token budget upfront | MiniCPM, 2024 ([2404.06395](https://arxiv.org/abs/2404.06395)) | 🔧 | `train.schedule: wsd` |
-| **muP** | retuning the learning rate at every width | Yang et al., 2022 ([2203.03466](https://arxiv.org/abs/2203.03466)) | 🔧 | `mup.enabled` |
-| **bf16 with fp32 master weights** | fp32 everywhere | Micikevicius et al., 2017 ([1710.03740](https://arxiv.org/abs/1710.03740)) | ⚡ 🛡️ | `train.precision` |
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **AdamW** | Applies weight decay directly to the weights instead of through the gradient, so it stops interacting with Adam's adaptive scaling | Adam with `beta2` 0.98 and plain L2 | 🛡️ 🎯 | [Loshchilov and Hutter, 2017](https://arxiv.org/abs/1711.05101) | `train.betas` |
+| **Decay excluding norms and biases** | Skips weight decay on norm gains, biases and embeddings, since shrinking a gain shrinks the very signal that gain exists to rescale | decay on every parameter | 🎯 | current practice | `train.weight_decay` |
+| **Warmup plus cosine** | Ramps the learning rate up over a few thousand steps, then anneals it smoothly toward zero | the inverse square root schedule | 🛡️ | GPT-3, 2020 | `train.schedule: cosine` |
+| **WSD** | Warms up, holds a **constant plateau**, then decays only over the last steps, so the total run length is not fixed before the run starts | cosine, which locks the token budget upfront | 🔧 | [MiniCPM, 2024](https://arxiv.org/abs/2404.06395) | `train.schedule: wsd` |
+| **muP** | Scales initialization and learning rate with width so activations keep the same magnitude at any `d_model`, which makes a learning rate tuned on a small model correct on a large one | retuning the learning rate at every width | 🔧 | [Yang et al., 2022](https://arxiv.org/abs/2203.03466) | `mup.enabled` |
+| **bf16 with fp32 master weights** | Runs the matmuls in reduced precision while keeping a full precision copy of the weights for the updates, so small gradients are not rounded away | fp32 everywhere | ⚡ 🛡️ | [Micikevicius et al., 2017](https://arxiv.org/abs/1710.03740) | `train.precision` |
 
 ---
 
@@ -180,69 +183,123 @@ that switches it on.
 
 *Absent from the 2017 paper, which never discusses autoregressive decoding cost.*
 
-| Component | Replaces | Paper | Optimizes | Config flag |
-|---|---|---|---|---|
-| **KV cache** | recomputing the prefix at every token | standard practice | ⚡ | `cache.py` |
-| **Ring buffer cache** | a dense cache on windowed layers | Mistral 7B, 2023 ([2310.06825](https://arxiv.org/abs/2310.06825)) | 💾 | `cache.RingCache` |
-| **Latent cache** | storing every KV head | DeepSeek-V2, 2024 ([2405.04434](https://arxiv.org/abs/2405.04434)) | 💾 | `cache.LatentCache` |
-| **Speculative decoding** | one forward pass per generated token | Leviathan et al., 2022 ([2211.17192](https://arxiv.org/abs/2211.17192)) | ⚡ | `generate.py` |
-
-*Correct rejection sampling makes speculative decoding produce **exactly** the target model distribution, so it is free speed rather than a quality trade.*
-
----
-
-The full index, with one PDF per line and the milestone that implements it, lives in [papers/_INDEX.md](papers/_INDEX.md).
-
-📚 **[docs/taxonomy.md](docs/taxonomy.md) sorts all of these by slot and by function**, meaning which part of the 2017 block they replace (tokenizer, positions, attention heads, score computation, add and norm, feed-forward, head, optimizer, inference) and which constraint they were invented for (memory, compute, quality, stability, long context, hyperparameter transfer). It ends with a "pick by constraint, not by slot" table, which is the one to read when choosing what goes into a model.
+| Component | What it does | Replaces | Optimizes | Paper | Flag |
+|---|---|---|---|---|---|
+| **KV cache** | Stores the keys and values of past tokens so each new token attends to them directly, turning an `O(n²)` cost into `O(n)` | recomputing the prefix at every token | ⚡ | standard practice | `cache.py` |
+| **Ring buffer cache** | Overwrites the oldest slot in place, since a windowed layer can never read past `w` positions anyway. **This is where the sliding window saving actually comes from** | a dense cache on windowed layers | 💾 | [Mistral 7B, 2023](https://arxiv.org/abs/2310.06825) | `cache.RingCache` |
+| **Latent cache** | Stores MLA's single compressed vector per token instead of every key and value head | storing every KV head | 💾 | [DeepSeek-V2, 2024](https://arxiv.org/abs/2405.04434) | `cache.LatentCache` |
+| **Speculative decoding** | A cheap model drafts `gamma` tokens, the target verifies all of them in **one** pass, and a rejection rule keeps a correct prefix. Done right the output distribution is **exactly** the target's, so it is free latency | one forward pass per generated token | ⚡ | [Leviathan et al., 2022](https://arxiv.org/abs/2211.17192) | `generate.py` |
 
 ---
 
 ## 📊 What the components were actually worth
 
-The whole point of the library. Full method, caveats and four more tables in
+The whole point of the library. Full method, caveats and five more tables in
 **[docs/ablations.md](docs/ablations.md)**. Below: 6 layers, `d_model` 256, byte
-level, 2.46M tokens per variant, identical seed, one config field changed at a
-time.
+level, **2.46M tokens per variant**, identical seed, one config field changed at
+a time, corpus frozen at sha `69a497f3a393`.
 
-| Change from the 2017 block | val loss | effect |
+**Deviating from the 2017 block**
+
+| Change | val loss | effect | params |
+|---|---|---|---|
+| `vanilla-2017` | 3.9280 | reference | 4.80M |
+| **RoPE** instead of sinusoidal | 1.9131 | **-2.015** | 4.80M |
+| **pre-norm** instead of post-norm | 3.3768 | **-0.551** | 4.80M |
+| RMSNorm instead of LayerNorm | 3.3439 | -0.033 | 4.80M |
+| SwiGLU instead of ReLU `4d` | 3.9270 | -0.001 | 4.80M |
+| scaled residual init | 3.9271 | -0.001 | 4.80M |
+| **all four together** | **1.8599** | **-2.068** | 4.78M |
+
+**Deviating from that modern socle**
+
+| Change | val loss | effect | params | deployed |
+|---|---|---|---|---|
+| **MTP depth 1** | **1.8211** | **-0.039** | 5.70M | 4.78M |
+| MQA or GQA g=4 | 1.8500 | -0.010 | 4.19M | 4.19M |
+| QK-norm | 1.8522 | -0.008 | 4.78M | 4.78M |
+| MoE, 8 experts top 2 | 1.8544 | -0.006 | 8.26M | 8.26M |
+| MatFormer, widths 1.0 / 0.5 / 0.25 | 1.8644 | +0.005 | 4.78M | 4.78M |
+| sliding window 128 | 1.8778 | **+0.018** | 4.78M | 4.78M |
+| **everything at once** | **1.8725** | **+0.013** | **10.70M** | 7.67M |
+
+**Positions dominate everything else.** RoPE alone is 97% of the total gain, and
+nothing else in the sweep is within an order of magnitude of it. Pre-norm is the
+second real win, for a placement change that costs nothing.
+
+**The bottom rows are the lesson the repo was built to make concrete.** Sliding
+window *costs* quality, MoE buys almost nothing for 1.7x the parameters, and
+stacking every brick gives a model with **2.2x the parameters and a worse loss**
+than the plain socle. These techniques solve problems a 5M parameter model does
+not have, so at this scale they are pure complexity.
+
+Which combination actually wins is the next section, and it is not the one you
+get by adding these rows up.
+
+---
+
+## 🏆 The best configuration, measured
+
+`configs/best.yaml`. **Not** assembled by adding up the winning flags, which is
+how people build models that are worse than their parts. Every combination below
+was trained on the same frozen corpus for the same token budget, and this one
+won on **both axes at once**: lowest held-out loss *and* smallest deployed
+model.
+
+| Slot | Choice | Measured effect | Why this and not the alternative |
+|---|---|---|---|
+| **Positions** | RoPE, `theta` 10000 | **-2.015** loss | The largest single effect measured anywhere in this repo. Raise `theta` to 500000 past ~8k context |
+| **Add & Norm** | RMSNorm, pre-norm | **-0.551** loss | Pre-norm removes the warmup requirement outright. RMSNorm adds -0.033 and is cheaper |
+| **Attention** | **MQA** (`n_kv_heads: 1`) | **-0.044** loss | Beat GQA g=4 at equal depth (1.8039 against 1.8244) *and* gives the smallest KV cache of any dense variant |
+| **Score computation** | QK-norm **off** | **+0.030** if switched on | Helps against the socle (-0.008) and on a GQA + MTP-1 model (-0.036), but *costs* on this combination. See the note below |
+| **Feed-forward** | SwiGLU, `8/3 d` | -0.001 loss | No measurable effect at 6 layers. Kept on the published evidence at scale, since it costs nothing |
+| **Head** | **MTP depth 2** | **-0.044** loss | Best single addition. The modules are dropped at inference, so the deployed model is *smaller* than the trained one |
+| **Init** | scaled residual | -0.001 loss | No depth to correct at 6 layers. Kept because a 12 layer model has some |
+| **Optimizer** | AdamW, WSD schedule | not ablated | WSD keeps the token budget open, so a pod can be stopped and the run extended |
+
+**Result**: `val loss 1.8039` against `1.8599` for the plain modern socle, with
+**4.10M deployed parameters against 4.78M**. Better and smaller.
+
+**Why QK-norm is off is the most instructive row in the table.** It improves the
+socle, and improves a GQA plus MTP-1 model even more. Assembling a config by
+adding up winners would switch it on. Measured on the winning combination it
+costs `+0.030`, more than MTP gained. Individually good changes do not compose,
+which is why every row above comes from a measured combination rather than a sum
+of measured parts.
+
+### What is deliberately absent, and what it cost to find out
+
+| Not in the best config | Measured | Verdict |
 |---|---|---|
-| `vanilla-2017` | 3.9888 | reference |
-| RoPE instead of sinusoidal | 2.0345 | **-1.954** |
-| pre-norm instead of post-norm | 3.4028 | **-0.586** |
-| RMSNorm instead of LayerNorm | 3.3795 | -0.023 |
-| SwiGLU instead of ReLU 4d | 3.9878 | -0.001 |
-| scaled residual init | 3.9889 | +0.000 |
-| **all four together** | **1.9591** | **-2.030** |
+| **MoE**, 8 experts top 2 | -0.006 loss for **1.7x** the parameters | this scale is not capacity limited |
+| **Sliding window** 128 | **+0.018** loss | removes information the model was using |
+| **MLA** | 4.1x faster absorbed than naive, still behind MHA here | only pays once the cache is the bottleneck |
+| **Everything at once** | **+0.024** loss for **10.70M** parameters | see below |
 
-| Change from the modern socle | val loss | effect |
-|---|---|---|
-| GQA g=4 instead of MHA | 1.9450 | **-0.014**, with 0.6M fewer parameters |
-| MTP depth 1 | 1.9193 | **-0.040** |
-| MoE, 8 experts top 2 | 1.9508 | -0.008, for 1.7x the parameters |
-| QK-norm | 1.9695 | **+0.010** |
-| sliding window 128 | 2.0057 | **+0.047** |
+That last row is the point of the whole repository. Stacking every brick gives a
+model with **2.2x the parameters, 1.9x the deployed size, and a worse loss** than
+the winner. It is slower, larger, harder to debug, and less accurate.
 
-**Positions dominate everything else**: RoPE alone is 96% of the total gain.
-**GQA is better than free** at this scale. And the last two rows are the lesson
-the repo was built to make concrete: QK-norm and sliding window *cost* quality,
-because they solve problems a 5M parameter model does not have. A model stacking
-every brick would be slower, larger and worse than the plain socle.
+```bash
+python -m mt.train --config configs/best.yaml
+```
 
 ---
 
 ## Example Outputs
 
-The M0 test suite, which validates the config schema and every shipped profile:
+The full test suite. Every component has a naive reference implementation and a
+fast path, plus a test asserting the two agree numerically:
 
 ```
-tests\test_config.py .................                                   [ 68%]
-tests\test_configs_load.py ......                                        [ 92%]
-tests\test_seed.py ..                                                    [100%]
-
-============================= 25 passed in 3.24s ==============================
+$ pytest
+........................................................................ [ 89%]
+..................................                                       [100%]
+322 passed in 33.28s
 ```
 
-The five profiles, each one a coherent selection rather than a pile of features:
+The six shipped profiles, each one a coherent selection rather than a pile of
+features:
 
 | Profile | Attention | Positions | Norm | FFN |
 |---|---|---|---|---|
@@ -251,6 +308,7 @@ The five profiles, each one a coherent selection rather than a pile of features:
 | `moe_1b_a200m.yaml` | GQA 16 / 4 | RoPE | RMSNorm, pre | MoE, 64 experts, top 6 |
 | `mla_long_ctx.yaml` | MLA, rank 512 | RoPE + YaRN ×4 | RMSNorm, pre | SwiGLU |
 | `gemma_style.yaml` | GQA + sliding window | RoPE | RMSNorm, sandwich | GeGLU |
+| **`best.yaml`** | **MQA + MTP depth 2** | **RoPE** | **RMSNorm, pre** | **SwiGLU** |
 
 ### 📝 Notes and observations
 
@@ -312,21 +370,6 @@ The decoder block, with every switchable component and the config flag that cont
 - No bias on the linears or the norms, tied embeddings
 - Output projections divided by `sqrt(2 · n_layers)` at init
 - AdamW `betas = (0.9, 0.95)`, weight decay 0.1 excluded from norms, biases and embeddings
-
----
-
-## 🛣️ Roadmap
-
-| Milestone | Content | Status |
-|---|---|---|
-| **M0** | Config schema, five profiles, determinism, test harness | ✅ done, 25 tests green |
-| **M1** | LayerNorm, RMSNorm, QK-Norm, DyT, scaled residual init, muP | ✅ done, 54 tests green |
-| **M2** | RoPE and its two conventions, YaRN, NTK, ALiBi, NoPE | ✅ done, 96 tests green |
-| **M3** | MHA, MQA, GQA, MLA with weight absorption, masks, KV caches | ✅ done, 150 tests green |
-| **M4** | SwiGLU family, fine-grained MoE, balancing, MTP heads | ✅ done, 197 tests green |
-| **M5** | Model assembly, optimizer groups, WSD schedule, training loop | ✅ done, 269 tests green |
-| **M6** | Sampling, incremental decoding, speculative decoding | ✅ done, 297 tests green |
-| **M7** | Benchmarks (KV memory, throughput) and the ablation table | ✅ done, 305 tests green |
 
 ---
 
@@ -455,6 +498,110 @@ The PDFs are gitignored because they are heavy, this restores all 29 of them:
 ```bash
 bash papers/download.sh
 ```
+
+---
+
+## 📚 What to train it on
+
+The library takes token ids and stops there, so the corpus is a separate
+decision. It is also the one that matters most: at small scale, **data quality
+moves the loss more than any architecture flag in the table above**.
+
+### The datasets worth knowing
+
+| Dataset | Size | What it is | Use it when |
+|---|---|---|---|
+| **[FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)** | 1.3T tokens | Common Crawl filtered by an educational-quality classifier | **The default for a small model.** Aggressive filtering trades diversity for quality, which is the right trade below a billion parameters |
+| **[DCLM-baseline](https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0)** | 3.8T tokens | filtered with a fastText classifier trained on OpenHermes and ELI5 | you want more diversity than FineWeb-Edu and have the budget to use it |
+| **[Nemotron-CC](https://huggingface.co/datasets/nvidia/nemotron-cc)** | 6.3T tokens | NVIDIA, classifier ensembling plus 2T tokens of synthetic rephrasing | long-horizon runs. Reported +5.6 MMLU over DCLM, and 4x more unique real tokens |
+| **[SmolLM corpus](https://huggingface.co/datasets/HuggingFaceTB/smollm-corpus)** | 250B tokens | the mixture behind SmolLM2, including Cosmopedia synthetic textbooks | you want a recipe already proven at 135M to 1.7B |
+| **[FineMath](https://huggingface.co/datasets/HuggingFaceTB/finemath)** | 54B tokens | mathematical web content | mixing in maths, usually 5 to 10% of the budget |
+| **[The Stack v2](https://huggingface.co/datasets/bigcode/the-stack-v2)** | 900B+ tokens | permissively licensed source code | mixing in code, usually 10 to 20% |
+
+**The pragmatic choice for this repository**: the
+[`sample-10BT` subset of FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu),
+about 28 GB on disk. It covers a Chinchilla-optimal run at 150M parameters three
+times over, downloads in minutes, and is the same data the SmolLM family was
+built on.
+
+### How many tokens
+
+| Rule | Ratio | For a 150M model | Why |
+|---|---|---|---|
+| **Chinchilla optimal** | 20 tokens per parameter | 3B tokens | best loss for a fixed *training* budget |
+| **Inference optimal** | 100 to 1000x | 15B to 150B tokens | what SmolLM and LLaMA 3 actually do. Training longer than Chinchilla is deliberate: it buys a smaller model at equal quality, and the model is served far more often than it is trained |
+
+Chinchilla answers "cheapest way to reach this loss". It is the wrong question
+for a model you intend to run, which is why every recent small model is heavily
+overtrained.
+
+### The one piece this repository does not provide
+
+A tokenizer. Training one is a separate project, and it is not where the
+interesting decisions are. **Reuse an existing one**, for instance
+[SmolLM2's](https://huggingface.co/HuggingFaceTB/SmolLM2-135M) at 49k tokens or
+GPT-2's at 50k. The ablations in `docs/ablations.md` sidestep this entirely by
+running at byte level with a 256 entry vocabulary, precisely so no tokenizer
+choice contaminates an architecture comparison.
+
+---
+
+## 💰 Training this on RunPod without spending much
+
+Estimates below use `6 * params * tokens` FLOPs and a conservative 25% model
+FLOPs utilization, which is realistic for a small model where the GPU spends a
+lot of its time waiting on memory. **Measure a short run before committing**:
+the numbers move by a factor of two with sequence length and batch size.
+
+| Goal | Model | Tokens | GPU | Time | Cost |
+|---|---|---|---|---|---|
+| Validate the pipeline end to end | 50M | 1B | RTX 4090 24 GB | ~2 h | **~$1** |
+| **The run worth doing** | **150M** | **3B** (Chinchilla) | **RTX 4090 24 GB** | **~18 h** | **~$6** |
+| A genuinely usable small model | 150M | 15B (100x) | RTX 4090 24 GB | ~4 days | ~$30 |
+| Going bigger | 500M | 10B | A100 80 GB | ~2 to 3 days | ~$80 |
+
+At roughly **$0.34/hour for an RTX 4090 on Community Cloud** and $1.39/hour for
+an A100 80 GB, the 150M run at Chinchilla costs about the price of a coffee.
+Verify current prices in the RunPod UI, they move.
+
+**A 4090 is the right GPU here, not an A100.** A 150M model at sequence length
+1024 fits in a few GB, so the 24 GB card is never the constraint. Paying 4x for
+80 GB of VRAM you will not use buys only the extra bandwidth, which is not worth
+the multiple at this size.
+
+**Practical setup**, and each of these has cost someone a run:
+
+  💾 **Take 100 GB of container disk, not the 5 GB default.** Torch CUDA alone is
+  about 3 GB, and FineWeb-Edu `sample-10BT` is 28 GB.
+
+  🔌 **Expose TCP port 22** in the pod settings. Without it only the
+  `ssh.runpod.io` proxy is offered, which supports neither `scp` nor port
+  forwarding.
+
+  🐍 **Ubuntu 22.04 or 24.04**, so Python is 3.10 or newer. The 20.04 templates
+  ship Python 3.8, which caps torch at 2.4.
+
+  ⚠️ **`/workspace` is not persistent** unless a network volume is attached.
+  Checkpoints and logs must be copied back before the pod is terminated.
+
+  ⏱️ **Use the WSD schedule**, `train.schedule: wsd`. Its stable plateau means
+  the token budget is not fixed before the run starts, so a pod can be stopped
+  and the run extended later instead of being restarted.
+
+---
+
+## 🛣️ Roadmap
+
+| Milestone | Content | Status |
+|---|---|---|
+| **M0** | Config schema, five profiles, determinism, test harness | ✅ done, 25 tests green |
+| **M1** | LayerNorm, RMSNorm, QK-Norm, DyT, scaled residual init, muP | ✅ done, 54 tests green |
+| **M2** | RoPE and its two conventions, YaRN, NTK, ALiBi, NoPE | ✅ done, 96 tests green |
+| **M3** | MHA, MQA, GQA, MLA with weight absorption, masks, KV caches | ✅ done, 150 tests green |
+| **M4** | SwiGLU family, fine-grained MoE, balancing, MTP heads | ✅ done, 197 tests green |
+| **M5** | Model assembly, optimizer groups, WSD schedule, training loop | ✅ done, 269 tests green |
+| **M6** | Sampling, incremental decoding, speculative decoding | ✅ done, 297 tests green |
+| **M7** | Benchmarks (KV memory, throughput) and the ablation table | ✅ done, 322 tests green |
 
 ---
 

@@ -89,8 +89,54 @@ class GatedMLP(nn.Module):
         return self.down_proj(self.activation(self.gate_proj(x)) * self.up_proj(x))
 
 
+class MatFormerMLP(GatedMLP):
+    """Nested gated FFN (Devvrit et al., 2023, arXiv 2310.07707).
+
+    The weights of a smaller FFN are literally the first rows of the larger
+    one, so a single set of parameters contains several models at once. Gemma
+    3n ships this as its E2B and E4B variants, extracted from one training run.
+
+    What it buys is not quality, it is **one run instead of several**. Training
+    a 5M and a 3M model separately costs two runs and gives two checkpoints
+    that share nothing. Training a MatFormer gives both, plus every granularity
+    in between through Mix'n'Match across layers.
+
+    What it costs is a forward pass per granularity during training, since all
+    of them are optimized jointly. That is the honest trade, and it is why the
+    ablation reports the full-size loss against a plain FFN trained alone.
+    """
+
+    def __init__(self, cfg: ModelConfig, d_ff: int | None = None) -> None:
+        super().__init__(cfg, d_ff)
+        self.granularities = list(cfg.ffn.mat_granularities or [1.0])
+        # resolved once, so a granularity always maps to the same slice
+        self.widths = [max(1, int(round(self.d_ff * g))) for g in self.granularities]
+
+    def width_for(self, granularity: float) -> int:
+        """Hidden width used by a granularity, matched to the nearest declared one."""
+        closest = min(self.granularities, key=lambda g: abs(g - granularity))
+        return self.widths[self.granularities.index(closest)]
+
+    def forward(self, x: Tensor, granularity: float = 1.0) -> Tensor:
+        d = self.width_for(granularity)
+        if d == self.d_ff:
+            return super().forward(x)
+        # slicing the weights rather than the activations is what makes the
+        # smaller model a genuine sub-model instead of a masked one
+        gate = F.linear(x, self.gate_proj.weight[:d])
+        up = F.linear(x, self.up_proj.weight[:d])
+        return F.linear(self.activation(gate) * up, self.down_proj.weight[:, :d])
+
+    def extra_repr(self) -> str:
+        return f"d_ff={self.d_ff}, granularities={self.granularities}"
+
+
 def build_ffn(cfg: ModelConfig, d_ff: int | None = None) -> nn.Module:
     """Instantiate the feed-forward selected by the config."""
+    if cfg.ffn.mat_granularities is not None:
+        if cfg.ffn.kind == "mlp":
+            raise ValueError("MatFormer is implemented for the gated FFN kinds only")
+        return MatFormerMLP(cfg, d_ff)
     if cfg.ffn.kind == "mlp":
         return MLP(cfg, d_ff)
     return GatedMLP(cfg, d_ff)

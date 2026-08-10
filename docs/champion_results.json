@@ -1,0 +1,54 @@
+{
+  "args": {
+    "steps": 600,
+    "batch": 16,
+    "seq_len": 256,
+    "lr": 0.001,
+    "seed": 0,
+    "eval_batches": 20,
+    "only": "best-mqa-mtp2",
+    "out": "docs\\champion_results.json"
+  },
+  "results": {
+    "vanilla-2017": {
+      "val_loss": 3.951791727542877,
+      "val_ppl": 52.028507232666016,
+      "params": 4804608,
+      "active_params": 4804608,
+      "train_s": 160.38540059997467,
+      "tokens": 2457600,
+      "baseline": "",
+      "changed": "the reference"
+    },
+    "modern-socle": {
+      "val_loss": 1.947357076406479,
+      "val_ppl": 7.010135650634766,
+      "params": 4784384,
+      "active_params": 4784384,
+      "train_s": 201.54675530001987,
+      "tokens": 2457600,
+      "baseline": "vanilla-2017",
+      "changed": "all four of the above together"
+    },
+    "best-candidate": {
+      "val_loss": 1.9498203575611115,
+      "val_ppl": 7.027425289154053,
+      "params": 5014272,
+      "active_params": 5014272,
+      "train_s": 224.45254220004426,
+      "tokens": 2457600,
+      "baseline": "modern-socle",
+      "changed": "GQA g=4 and MTP depth 1 together"
+    },
+    "best-mqa-mtp2": {
+      "val_loss": 1.9240454733371735,
+      "val_ppl": 6.848608016967773,
+      "params": 5702912,
+      "active_params": 5702912,
+      "train_s": 257.70424150000326,
+      "tokens": 2457600,
+      "baseline": "best-candidate",
+      "changed": "MQA and MTP depth 2, the two winners combined"
+    }
+  }
+}

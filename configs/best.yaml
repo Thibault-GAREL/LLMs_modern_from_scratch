@@ -1,0 +1,89 @@
+# The best configuration measured in docs/ablations.md.
+#
+# Not assembled by adding up the winning flags, which is how people build models
+# that are worse than their parts. Every combination below was trained on the
+# same frozen corpus for the same token budget and compared on held-out loss,
+# and this one won on both axes at once: lowest loss AND smallest deployed
+# model.
+#
+#   val loss 1.8039, against 1.8599 for the plain modern socle
+#   4.10M parameters deployed, against 4.78M for that socle
+#
+# Read the two absences as results, not oversights. MoE, sliding window and MLA
+# were measured and each made the model worse at this scale. See
+# docs/ablations.md section 5.
+#
+# Sized here for a real run rather than at the 5M used for the ablations: 124M
+# parameters trained, 110M deployed once the MTP modules are dropped. The
+# structural flags are what was measured, the widths are simply scaled up.
+#
+# The token budget below is 6.6B, about 60 tokens per deployed parameter. That
+# is 3x Chinchilla, deliberately: Chinchilla answers the cheapest way to reach
+# a loss, which is the wrong question for a model you intend to serve.
+
+model:
+  # 124M parameters, 110M of them deployed
+  d_model: 768
+  n_layers: 12
+  vocab_size: 49152        # SmolLM2 tokenizer, see the README data section
+  max_seq_len: 2048
+  bias: false              # no bias on any linear or norm
+  dropout: 0.0             # pretraining on fresh tokens never repeats a sample
+  tie_embeddings: true     # saves vocab * d_model, which is 20% of a model this size
+
+  attention:
+    # MQA beat GQA g=4 here (1.8039 against 1.8244 at equal depth) while also
+    # giving the smallest KV cache of any dense variant. Revisit at larger
+    # scale, where the published evidence favours GQA for quality.
+    kind: mqa
+    n_heads: 12
+    n_kv_heads: 1
+    # OFF, and this one is worth explaining. QK-norm helps against the plain
+    # socle (-0.008) and helps more on a GQA + MTP-1 model (-0.036), so adding
+    # up winners would switch it on. Measured on *this* combination it costs
+    # +0.030. Whatever it stabilizes is already handled here, and it is the
+    # clearest example in the repo of why combinations get measured rather than
+    # assembled. Turn it back on the moment training actually destabilizes.
+    qk_norm: false
+
+  position:
+    # The single largest effect measured anywhere: -2.015 loss on its own.
+    kind: rope
+    rope_theta: 10000.0    # raise to 500000 before training past ~8k context
+    rope_style: half       # LLaMA and GPT-NeoX convention
+
+  ffn:
+    kind: swiglu
+    multiple_of: 256
+
+  norm:
+    kind: rmsnorm
+    placement: pre         # -0.551 loss on its own, and it removes the warmup requirement
+
+  init:
+    scheme: fixed
+    std: 0.02
+    scaled_residual: true  # no measurable effect at 6 layers, keep it for 12
+
+  # Best single addition to the socle, -0.044. The modules are dropped at
+  # inference, so the deployed model is smaller than the trained one.
+  mtp_depth: 2
+  mtp_lambda: 0.3
+
+train:
+  precision: bf16          # falls back to fp16 automatically on pre-Ampere GPUs
+  lr: 3.0e-4
+  betas: [0.9, 0.95]
+  weight_decay: 0.1        # excluded from norms, biases and embeddings
+  max_grad_norm: 1.0
+  # WSD rather than cosine: the plateau means the token budget is not locked in
+  # before the run starts, so a pod can be stopped and the run extended later.
+  schedule: wsd
+  warmup_steps: 2000
+  decay_steps: 8000
+  max_steps: 50000
+  micro_batch_size: 16
+  grad_accum_steps: 4
+  seq_len: 2048
+  z_loss_coef: 1.0e-4
+  activation_checkpointing: false

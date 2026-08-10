@@ -161,6 +161,31 @@ class FFNConfig(StrictModel):
     mult: float | None = Field(None, gt=0)  # None => 4.0 (mlp) or 8/3 (gated)
     multiple_of: int = Field(256, gt=0)
 
+    # MatFormer (Devvrit et al., 2023, arXiv 2310.07707), the nested FFN used by
+    # Gemma 3n. Each granularity is a fraction of d_ff whose weights are a
+    # sub-matrix of the next size up, so one training run yields several
+    # deployable models. None disables it entirely.
+    mat_granularities: list[float] | None = None
+
+    @model_validator(mode="after")
+    def _check_granularities(self) -> FFNConfig:
+        if self.mat_granularities is None:
+            return self
+        g = self.mat_granularities
+        if not g:
+            raise ValueError("mat_granularities must be None or a non-empty list")
+        if any(not 0 < x <= 1 for x in g):
+            raise ValueError(f"mat_granularities must lie in (0, 1], got {g}")
+        if 1.0 not in g:
+            raise ValueError(
+                "mat_granularities must include 1.0, the full model the others nest inside"
+            )
+        if sorted(g, reverse=True) != g:
+            raise ValueError(f"mat_granularities must be sorted from largest, got {g}")
+        if len(set(g)) != len(g):
+            raise ValueError(f"mat_granularities must be distinct, got {g}")
+        return self
+
 
 class MoEConfig(StrictModel):
     """Mixture of Experts.
