@@ -98,20 +98,31 @@ def test_override_is_revalidated_by_the_schema():
 # ---------------------------------------------------------------------------
 
 
-def test_training_reduces_the_loss(tmp_path):
-    run_dir = train(tiny_config(), out_dir=tmp_path)
-    records = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text().splitlines()]
+def metrics_of(model_dir) -> list[dict]:
+    """Read the metrics.jsonl RunLogger wrote for this run.
+
+    ``outputs/models/<name>_run-NN_date-.../`` pairs with
+    ``outputs/logs/<name>_run-NN/``.
+    """
+    run_name = model_dir.name.split("_date-")[0]
+    log_file = model_dir.parents[1] / "logs" / run_name / "metrics.jsonl"
+    return [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()]
+
+
+def test_training_reduces_the_loss():
+    model_dir = train(tiny_config(), mlflow=False, model_name="t-loss")
+    records = metrics_of(model_dir)
     assert len(records) >= 3
     assert records[-1]["loss/ce"] < records[0]["loss/ce"]
 
 
-def test_metrics_contain_every_expected_field(tmp_path):
-    run_dir = train(tiny_config(), out_dir=tmp_path)
-    first = json.loads((run_dir / "metrics.jsonl").read_text().splitlines()[0])
+def test_metrics_contain_every_expected_field():
+    model_dir = train(tiny_config(), mlflow=False, model_name="t-fields")
+    first = metrics_of(model_dir)[0]
     assert {"step", "lr", "grad_norm", "step_time_s", "tokens", "loss/ce"} <= set(first)
 
 
-def test_gradient_accumulation_matches_a_larger_batch(tmp_path):
+def test_gradient_accumulation_matches_a_larger_batch():
     """Accumulating must be equivalent to one bigger batch, not merely similar."""
     from mt.model import Transformer
     from mt.optim import build_optimizer
@@ -139,13 +150,13 @@ def test_gradient_accumulation_matches_a_larger_batch(tmp_path):
     build_optimizer(model_a, cfg.model, cfg.train)  # must not raise
 
 
-def test_checkpoint_round_trips(tmp_path):
-    cfg = tiny_config(ckpt_interval=1000)
-    run_dir = train(cfg, out_dir=tmp_path)
+def test_checkpoint_round_trips():
+    cfg = tiny_config()
+    model_dir = train(cfg, mlflow=False, model_name="t-ckpt")
     # map_location so a GPU checkpoint stays loadable on a CPU-only machine
-    ckpt = torch.load(run_dir / "ckpt.pt", map_location="cpu", weights_only=False)
+    ckpt = torch.load(model_dir / "ckpt.pt", map_location="cpu", weights_only=False)
     assert ckpt["step"] == cfg.train.max_steps - 1
-    assert "model" in ckpt and "optimizer" in ckpt
+    assert {"model", "optimizer", "scheduler", "scaler"} <= set(ckpt)
 
     restored = Config.model_validate(ckpt["config"])
     from mt.model import Transformer
@@ -154,21 +165,23 @@ def test_checkpoint_round_trips(tmp_path):
     model.load_state_dict(ckpt["model"])
 
 
-def test_config_is_saved_next_to_the_metrics(tmp_path):
-    run_dir = train(tiny_config(), out_dir=tmp_path)
-    saved = json.loads((run_dir / "config.json").read_text())
+def test_config_is_saved_next_to_the_log():
+    model_dir = train(tiny_config(), mlflow=False, model_name="t-cfg")
+    run_name = model_dir.name.split("_date-")[0]
+    saved = json.loads(
+        (model_dir.parents[1] / "logs" / run_name / "config.json").read_text()
+    )
     assert saved["model"]["d_model"] == 32
 
 
-def test_wsd_schedule_runs_end_to_end(tmp_path):
+def test_wsd_schedule_runs_end_to_end():
     cfg = tiny_config(schedule="wsd", decay_steps=4)
-    run_dir = train(cfg, out_dir=tmp_path)
-    records = [json.loads(line) for line in (run_dir / "metrics.jsonl").read_text().splitlines()]
-    lrs = [r["lr"] for r in records]
+    model_dir = train(cfg, mlflow=False, model_name="t-wsd")
+    lrs = [r["lr"] for r in metrics_of(model_dir) if "lr" in r]
     assert lrs[-1] < max(lrs), "the decay phase must lower the learning rate"
 
 
-def test_activation_checkpointing_runs(tmp_path):
+def test_activation_checkpointing_runs():
     cfg = tiny_config(activation_checkpointing=True)
-    run_dir = train(cfg, out_dir=tmp_path)
-    assert (run_dir / "metrics.jsonl").exists()
+    model_dir = train(cfg, mlflow=False, model_name="t-ckptact")
+    assert (model_dir / "ckpt.pt").exists()

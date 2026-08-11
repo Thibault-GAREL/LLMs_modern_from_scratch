@@ -297,6 +297,7 @@ class TrainConfig(StrictModel):
     activation_checkpointing: bool = False
     seed: int = 42
     log_interval: int = Field(10, gt=0)
+    eval_interval: int = Field(500, gt=0)  # held-out loss, needs a val split
     ckpt_interval: int = Field(500, gt=0)
     out_dir: str = "outputs"
 
