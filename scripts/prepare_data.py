@@ -87,8 +87,16 @@ def fetch(lang: str, remote: str, scratch: Path) -> Path:
     )
 
 
-def tokenize_shard(path: Path, tokenizer, batch: int = 1000) -> np.ndarray:
-    """Read one parquet shard and return its token ids.
+def tokenize_shard(
+    path: Path, tokenizer, budget: int | None = None, batch: int = 1000
+) -> np.ndarray:
+    """Read one parquet shard and return its token ids, up to ``budget``.
+
+    Two things this must not do, both learned the hard way on the pod. It must
+    not read the whole shard into Python (``to_pylist`` on a 2 GB parquet plus
+    714M accumulated tokens got the process killed by the OOM killer), and it
+    must not tokenize a whole shard to keep a fraction of it. Reading row
+    batches and stopping at the budget fixes both.
 
     Batching the tokenizer is a 4.6x speedup over one call per document, since
     the fast tokenizer parallelizes inside Rust.
@@ -97,16 +105,24 @@ def tokenize_shard(path: Path, tokenizer, batch: int = 1000) -> np.ndarray:
 
     eos = tokenizer.eos_token_id
     chunks: list[np.ndarray] = []
-    table = pq.read_table(path, columns=["text"])
-    texts = table.column("text").to_pylist()
-    for i in range(0, len(texts), batch):
-        window = [t for t in texts[i : i + batch] if t]
+    produced = 0
+
+    parquet = pq.ParquetFile(path)
+    for record_batch in parquet.iter_batches(batch_size=batch, columns=["text"]):
+        window = [t for t in record_batch.column("text").to_pylist() if t]
         if not window:
             continue
         for ids in tokenizer(window, add_special_tokens=False)["input_ids"]:
             ids.append(eos)  # a document boundary the model can learn to respect
             chunks.append(np.asarray(ids, dtype=DTYPE))
-    return np.concatenate(chunks) if chunks else np.empty(0, dtype=DTYPE)
+            produced += len(ids)
+        if budget is not None and produced >= budget:
+            break
+
+    if not chunks:
+        return np.empty(0, dtype=DTYPE)
+    tokens = np.concatenate(chunks)
+    return tokens[:budget] if budget is not None else tokens
 
 
 def write_split(
@@ -152,16 +168,24 @@ def write_split(
                 if future is None:
                     continue
                 shard = future.result()
-                tokens = tokenize_shard(shard, tokenizer)
+                # never tokenize more than we are going to keep
+                keep = tokenize_shard(shard, tokenizer, budget=remaining[lang])
                 shard.unlink(missing_ok=True)
 
-                keep = tokens[: remaining[lang]]
                 fh.write(keep.tobytes())
                 counts[lang] += len(keep)
                 remaining[lang] -= len(keep)
                 bar.update(len(keep))
                 if remaining[lang] <= 0:
                     remaining.pop(lang)
+
+        # a language can finish while its next shard is still downloading, and
+        # that file would otherwise sit on disk until the pod dies
+        for future in prefetch.values():
+            try:
+                future.result().unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001 - a failed download has nothing to clean
+                pass
     bar.close()
     return counts
 

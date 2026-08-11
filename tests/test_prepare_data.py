@@ -44,9 +44,12 @@ def fake_hub(monkeypatch, tmp_path):
         fetched.append(path)
         return path
 
-    def fake_tokenize(path: Path, tokenizer, batch: int = 1000) -> np.ndarray:
+    def fake_tokenize(
+        path: Path, tokenizer, budget: int | None = None, batch: int = 1000
+    ) -> np.ndarray:
         lang = path.name.split("_")[0]
-        return np.full(TOKENS_PER_SHARD, MARKER[lang], dtype=prepare_data.DTYPE)
+        n = TOKENS_PER_SHARD if budget is None else min(TOKENS_PER_SHARD, budget)
+        return np.full(n, MARKER[lang], dtype=prepare_data.DTYPE)
 
     monkeypatch.setattr(prepare_data, "list_shards", fake_list_shards)
     monkeypatch.setattr(prepare_data, "fetch", fake_fetch)
@@ -127,6 +130,32 @@ def test_shards_are_deleted_as_they_are_consumed(tmp_path, fake_hub):
     assert len(fake_hub) >= 10, "the test should have fetched several shards"
     survivors = [p for p in fake_hub if p.exists()]
     assert not survivors, f"{len(survivors)} shards left on disk"
+
+
+def test_a_prefetched_shard_is_cleaned_when_its_language_finishes(tmp_path, fake_hub):
+    """English finishing early must not leave its next download on disk.
+
+    On a 20 GB volume a leaked 2 GB shard is 10% of the space, and it survives
+    until the pod is destroyed.
+    """
+    run(tmp_path, {"en": 1_500, "fr": 8_000}, fake_hub)
+    survivors = [p for p in fake_hub if p.exists()]
+    assert not survivors, f"{len(survivors)} shards leaked after a language finished"
+
+
+def test_only_the_needed_tokens_are_produced(tmp_path, fake_hub, monkeypatch):
+    """A shard holds 714M tokens, so tokenizing all of it to keep 1M is waste."""
+    budgets_seen: list[int | None] = []
+    original = prepare_data.tokenize_shard
+
+    def spy(path, tokenizer, budget=None, batch=1000):
+        budgets_seen.append(budget)
+        return original(path, tokenizer, budget, batch)
+
+    monkeypatch.setattr(prepare_data, "tokenize_shard", spy)
+    run(tmp_path, {"en": 1_500, "fr": 500}, fake_hub)
+    assert budgets_seen, "tokenize_shard should have been called"
+    assert all(b is not None for b in budgets_seen), "the budget must be passed down"
 
 
 # ---------------------------------------------------------------------------
