@@ -51,6 +51,23 @@ _SOFTCAP_WARNED = False
 USE_SDPA_ENABLE_GQA = False
 
 
+def _sdpa_has_enable_gqa() -> bool:
+    """torch added the keyword in 2.5. On 2.4 even passing False raises."""
+    try:
+        F.scaled_dot_product_attention(
+            torch.zeros(1, 2, 2, 4),
+            torch.zeros(1, 1, 2, 4),
+            torch.zeros(1, 1, 2, 4),
+            enable_gqa=True,
+        )
+    except TypeError:
+        return False
+    return True
+
+
+SDPA_HAS_ENABLE_GQA = _sdpa_has_enable_gqa()
+
+
 def repeat_kv(x: Tensor, n_rep: int) -> Tensor:
     """Expand ``(B, n_kv_heads, T, D)`` to ``(B, n_kv_heads * n_rep, T, D)``.
 
@@ -276,6 +293,9 @@ class Attention(nn.Module):
                     attn_mask = bias
             # is_causal only when the block is square, see build_attention_mask
             is_causal = attn_mask is None and q.shape[-2] == k.shape[-2]
+            # the keyword only exists from torch 2.5, and passing it as False
+            # is still a TypeError on 2.4, so it has to be left out entirely
+            extra = {"enable_gqa": enable_gqa} if SDPA_HAS_ENABLE_GQA else {}
             return F.scaled_dot_product_attention(
                 q,
                 k,
@@ -284,7 +304,7 @@ class Attention(nn.Module):
                 is_causal=is_causal,
                 scale=self.scale,
                 dropout_p=self.dropout if self.training else 0.0,
-                enable_gqa=enable_gqa,
+                **extra,
             )
         return self._attend_naive(q, k, v, mask=mask, bias=bias)
 

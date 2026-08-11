@@ -55,7 +55,24 @@ def test_repeat_kv_is_a_noop_for_one():
     assert repeat_kv(x, 1) is x
 
 
+def _sdpa_supports_enable_gqa() -> bool:
+    """torch added the keyword in 2.5, and a pod may well run 2.4."""
+    import torch.nn.functional as F
+
+    try:
+        F.scaled_dot_product_attention(
+            torch.zeros(1, 2, 2, 4), torch.zeros(1, 1, 2, 4), torch.zeros(1, 1, 2, 4),
+            enable_gqa=True,
+        )
+    except TypeError:
+        return False
+    return True
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA backend")
+@pytest.mark.skipif(
+    not _sdpa_supports_enable_gqa(), reason="this torch has no enable_gqa keyword"
+)
 def test_enable_gqa_still_regresses():
     """Locks in why ``USE_SDPA_ENABLE_GQA`` is off.
 
