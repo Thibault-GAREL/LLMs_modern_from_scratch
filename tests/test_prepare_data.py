@@ -1,9 +1,9 @@
 """The bilingual mixing logic, checked without touching the network.
 
 ``prepare_data.py`` runs on a rented pod, so a bug in it costs billed time.
-The streaming and the tokenizer are faked here, which leaves exactly the part
-worth testing: whether the languages come out at the requested ratio and
-interleaved rather than concatenated.
+Downloads and tokenization are faked here, which leaves exactly the part worth
+testing: whether the languages come out at the requested ratio, whether the
+budget is respected, and whether shards are deleted as they are consumed.
 """
 
 from __future__ import annotations
@@ -20,97 +20,113 @@ sys.path.insert(0, str(SCRIPTS))
 
 prepare_data = pytest.importorskip("prepare_data")
 
+TOKENS_PER_SHARD = 1000
+MARKER = {"en": 1, "fr": 2}
+
 
 @pytest.fixture
-def fake_streams(monkeypatch):
-    """Replace the dataset stream by deterministic per-language token blocks.
+def fake_hub(monkeypatch, tmp_path):
+    """Replace the hub by shards of constant, per-language token values.
 
-    English documents are all 1s, French all 2s, so the written file can be
-    read back and attributed to a language token by token.
+    English shards are all 1s and French all 2s, so the written file can be
+    attributed to a language token by token.
     """
-    marker = {"en": 1, "fr": 2}
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    fetched: list[Path] = []
 
-    def fake_stream(tokenizer, source, budget, label):
-        lang = label.split("/")[-1]
-        produced = 0
-        while produced < budget:
-            n = 50
-            produced += n
-            yield np.full(n, marker[lang], dtype=prepare_data.DTYPE)
+    def fake_list_shards(lang: str) -> list[str]:
+        return [f"{lang}/shard_{i:03d}.parquet" for i in range(20)]
 
-    monkeypatch.setattr(prepare_data, "stream_tokens", fake_stream)
-    return marker
+    def fake_fetch(lang: str, remote: str, scratch_dir: Path) -> Path:
+        path = scratch / f"{lang}_{Path(remote).name}"
+        path.write_bytes(b"fake shard")
+        fetched.append(path)
+        return path
+
+    def fake_tokenize(path: Path, tokenizer, batch: int = 1000) -> np.ndarray:
+        lang = path.name.split("_")[0]
+        return np.full(TOKENS_PER_SHARD, MARKER[lang], dtype=prepare_data.DTYPE)
+
+    monkeypatch.setattr(prepare_data, "list_shards", fake_list_shards)
+    monkeypatch.setattr(prepare_data, "fetch", fake_fetch)
+    monkeypatch.setattr(prepare_data, "tokenize_shard", fake_tokenize)
+    return fetched
 
 
 def read_tokens(path: Path) -> np.ndarray:
     return np.fromfile(path, dtype=prepare_data.DTYPE)
 
 
+def run(tmp_path, budgets, fake_hub, split="train"):
+    return prepare_data.write_split(
+        None, budgets, tmp_path, split, tmp_path / "scratch", workers=2
+    )
+
+
 # ---------------------------------------------------------------------------
-# Mixing
+# Mixture
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("en_ratio", [0.7, 0.5, 0.3])
-def test_mixture_lands_near_the_requested_ratio(tmp_path, fake_streams, en_ratio):
+def test_mixture_lands_near_the_requested_ratio(tmp_path, fake_hub, en_ratio):
     total = 20_000
     budgets = {"en": int(total * en_ratio), "fr": total - int(total * en_ratio)}
-    counts = prepare_data.write_split(None, budgets, tmp_path, "train", seed=0)
+    counts = run(tmp_path, budgets, fake_hub)
 
-    produced = sum(counts.values())
-    actual = counts["en"] / produced
-    assert abs(actual - en_ratio) < 0.05, (
+    actual = counts["en"] / sum(counts.values())
+    assert abs(actual - en_ratio) < 0.02, (
         f"asked for {en_ratio:.0%} English, wrote {actual:.1%}"
     )
 
 
-def test_languages_are_interleaved_not_concatenated(tmp_path, fake_streams):
-    """Concatenating would give the model a curriculum nobody asked for."""
-    prepare_data.write_split(None, {"en": 10_000, "fr": 10_000}, tmp_path, "train", 0)
+def test_both_languages_reach_the_file(tmp_path, fake_hub):
+    counts = run(tmp_path, {"en": 5_000, "fr": 5_000}, fake_hub)
     tokens = read_tokens(tmp_path / "train.bin")
-
-    # count how many times the language flips along the file
-    langs = tokens[::50]  # one sample per emitted document
-    switches = int(np.sum(langs[1:] != langs[:-1]))
-    assert switches > 50, f"only {switches} language switches, that is a concatenation"
-
-
-def test_both_languages_are_present(tmp_path, fake_streams):
-    counts = prepare_data.write_split(None, {"en": 5_000, "fr": 5_000}, tmp_path, "t", 0)
-    tokens = read_tokens(tmp_path / "t.bin")
     assert set(np.unique(tokens)) == {1, 2}
-    assert counts["en"] > 0 and counts["fr"] > 0
+    assert counts["en"] == 5_000 and counts["fr"] == 5_000
 
 
-def test_a_zero_budget_drops_the_language(tmp_path, fake_streams):
+def test_languages_alternate_along_the_file(tmp_path, fake_hub):
+    """Shard-level interleaving, which random-offset sampling makes sufficient."""
+    run(tmp_path, {"en": 10_000, "fr": 10_000}, fake_hub)
+    tokens = read_tokens(tmp_path / "train.bin")
+    langs = tokens[::TOKENS_PER_SHARD]
+    switches = int(np.sum(langs[1:] != langs[:-1]))
+    assert switches >= 5, f"only {switches} switches, that is a concatenation"
+
+
+def test_a_zero_budget_drops_the_language(tmp_path, fake_hub):
     """An English-only run must not emit a single French token."""
-    counts = prepare_data.write_split(None, {"en": 5_000, "fr": 0}, tmp_path, "t", 0)
-    assert counts == {"en": pytest.approx(5_000, abs=100)}
-    assert set(np.unique(read_tokens(tmp_path / "t.bin"))) == {1}
+    counts = run(tmp_path, {"en": 5_000, "fr": 0}, fake_hub)
+    assert counts == {"en": 5_000}
+    assert set(np.unique(read_tokens(tmp_path / "train.bin"))) == {1}
 
 
-def test_output_size_matches_the_budget(tmp_path, fake_streams):
-    budgets = {"en": 7_000, "fr": 3_000}
-    prepare_data.write_split(None, budgets, tmp_path, "train", 0)
-    written = len(read_tokens(tmp_path / "train.bin"))
-    # documents are emitted whole, so the last one can overshoot slightly
-    assert 10_000 <= written <= 10_000 + 100
+def test_the_budget_is_respected_exactly(tmp_path, fake_hub):
+    """Shards are truncated, so the file must not overshoot."""
+    run(tmp_path, {"en": 7_500, "fr": 2_500}, fake_hub)
+    assert len(read_tokens(tmp_path / "train.bin")) == 10_000
 
 
-def test_the_split_is_reproducible(tmp_path, fake_streams):
-    a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir(), b.mkdir()
-    prepare_data.write_split(None, {"en": 5_000, "fr": 5_000}, a, "t", seed=3)
-    prepare_data.write_split(None, {"en": 5_000, "fr": 5_000}, b, "t", seed=3)
-    np.testing.assert_array_equal(read_tokens(a / "t.bin"), read_tokens(b / "t.bin"))
+def test_running_out_of_shards_warns_instead_of_hanging(tmp_path, fake_hub, capsys):
+    # 20 fake shards of 1000 tokens cap each language at 20_000
+    counts = run(tmp_path, {"en": 50_000, "fr": 1_000}, fake_hub)
+    assert counts["en"] == 20_000
+    assert "ran out of shards" in capsys.readouterr().out
 
 
-def test_a_different_seed_gives_a_different_interleaving(tmp_path, fake_streams):
-    a, b = tmp_path / "a", tmp_path / "b"
-    a.mkdir(), b.mkdir()
-    prepare_data.write_split(None, {"en": 5_000, "fr": 5_000}, a, "t", seed=1)
-    prepare_data.write_split(None, {"en": 5_000, "fr": 5_000}, b, "t", seed=2)
-    assert not np.array_equal(read_tokens(a / "t.bin"), read_tokens(b / "t.bin"))
+# ---------------------------------------------------------------------------
+# Disk hygiene, which a 20 GB volume depends on
+# ---------------------------------------------------------------------------
+
+
+def test_shards_are_deleted_as_they_are_consumed(tmp_path, fake_hub):
+    run(tmp_path, {"en": 5_000, "fr": 5_000}, fake_hub)
+    assert len(fake_hub) >= 10, "the test should have fetched several shards"
+    survivors = [p for p in fake_hub if p.exists()]
+    assert not survivors, f"{len(survivors)} shards left on disk"
 
 
 # ---------------------------------------------------------------------------
@@ -118,30 +134,30 @@ def test_a_different_seed_gives_a_different_interleaving(tmp_path, fake_streams)
 # ---------------------------------------------------------------------------
 
 
-def test_written_file_loads_as_a_dataset(tmp_path, fake_streams):
+def test_written_file_loads_as_a_dataset(tmp_path, fake_hub):
     """The two halves of the pipeline must actually fit together."""
     import torch
 
     from mt.data import TokenDataset
 
-    prepare_data.write_split(None, {"en": 7_000, "fr": 3_000}, tmp_path, "train", 0)
+    run(tmp_path, {"en": 7_000, "fr": 3_000}, fake_hub)
     (tmp_path / "meta.json").write_text(
         json.dumps({"vocab_size": 32000, "dtype": "uint16", "mixture": {"en": 0.7}}),
         encoding="utf-8",
     )
     ds = TokenDataset(tmp_path, "train", seq_len=64, device=torch.device("cpu"))
-    x, y = ds.batch(2)
+    x, _ = ds.batch(2)
     assert x.shape == (2, 64)
     assert set(int(v) for v in x.unique()) <= {1, 2}
 
 
 def test_dtype_holds_the_target_vocabulary():
-    """uint16 covers CroissantLLM's 32k, and prepare_data refuses anything larger."""
+    """uint16 covers CroissantLLM's 32k, and build_tokenizer refuses anything larger."""
     assert np.iinfo(prepare_data.DTYPE).max >= 32_000
     assert np.dtype(prepare_data.DTYPE).itemsize == 2
 
 
 def test_sources_point_at_the_expected_datasets():
     en, fr = prepare_data.SOURCES["en"], prepare_data.SOURCES["fr"]
-    assert "fineweb-edu" in en["path"]
-    assert "fineweb-2" in fr["path"] and fr["name"] == "fra_Latn"
+    assert "fineweb-edu" in en["repo"] and en["prefix"] == "sample/10BT/"
+    assert "fineweb-2" in fr["repo"] and "fra_Latn" in fr["prefix"]

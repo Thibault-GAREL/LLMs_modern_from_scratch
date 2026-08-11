@@ -8,30 +8,34 @@ Produces the layout ``mt.data.TokenDataset`` expects::
 
 Defaults target a French and English model:
 
-  **English** [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu),
-  Common Crawl filtered by an educational-quality classifier. The best public
-  filtering for a small model.
+  **English** [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)
+  ``sample/10BT``, Common Crawl filtered by an educational-quality classifier.
 
   **French** [FineWeb2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2)
-  `fra_Latn`, the same pipeline with per-language filters and stopwords.
+  ``fra_Latn``, the same pipeline with per-language filters and stopwords.
 
   **Tokenizer** [CroissantLLM](https://huggingface.co/croissantllm/CroissantLLMBase),
-  32k, trained for a 1:1 French-English model. An English-centric tokenizer
+  32k, trained for a French and English model. An English-centric tokenizer
   spends 30 to 50% more tokens on the same French text, which is 30 to 50% more
-  compute for the same content, so this choice is not cosmetic.
+  compute for the same content.
 
-Run it on the pod rather than at home: the download dominates, and a data
-centre link is far faster than a domestic one.
+**Why shards and not streaming.** Measured on a RunPod RTX 4090 pod:
+streaming document by document sustains about 10k tokens/s, which is 167 hours
+for 6B tokens. Downloading the parquet shards directly runs at 25 MiB/s and
+batch tokenization at 3.2M tokens/s, which brings the same job under an hour.
+The bottleneck was never the tokenizer.
 
-    python scripts/prepare_data.py --out data/bilingual --tokens 6e9 --en-ratio 0.7
-    python scripts/prepare_data.py --out data/tiny --tokens 2e6   # smoke test
+    python scripts/prepare_data.py --out /workspace/data/bilingual --tokens 6e9
+    python scripts/prepare_data.py --out /tmp/tiny --tokens 2e6   # smoke test
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -40,16 +44,8 @@ from tqdm import tqdm
 DTYPE = np.uint16  # any vocabulary below 65536 fits, and it halves the file size
 
 SOURCES = {
-    "en": {
-        "path": "HuggingFaceFW/fineweb-edu",
-        "name": "sample-10BT",
-        "split": "train",
-    },
-    "fr": {
-        "path": "HuggingFaceFW/fineweb-2",
-        "name": "fra_Latn",
-        "split": "train",
-    },
+    "en": {"repo": "HuggingFaceFW/fineweb-edu", "prefix": "sample/10BT/"},
+    "fr": {"repo": "HuggingFaceFW/fineweb-2", "prefix": "data/fra_Latn/train/"},
 }
 
 
@@ -59,132 +55,168 @@ def build_tokenizer(name: str):
     tok = AutoTokenizer.from_pretrained(name)
     if tok.vocab_size >= 2**16:
         raise SystemExit(
-            f"{name} has a {tok.vocab_size} vocabulary, which does not fit in uint16. "
-            "Pick a smaller tokenizer or change DTYPE."
+            f"{name} has a {tok.vocab_size} vocabulary, which does not fit in uint16."
         )
+    if tok.eos_token_id is None:
+        raise SystemExit(f"{name} has no eos token, cannot mark document boundaries")
     return tok
 
 
-def stream_tokens(tokenizer, source: dict, budget: int, label: str):
-    """Yield token id arrays from a streamed dataset until ``budget`` is met.
+def list_shards(lang: str) -> list[str]:
+    from huggingface_hub import list_repo_files
 
-    Streaming rather than downloading the whole split: FineWeb-Edu alone is
-    28 GB and we only need a slice of it.
-    """
-    from datasets import load_dataset
+    src = SOURCES[lang]
+    files = [
+        f
+        for f in list_repo_files(src["repo"], repo_type="dataset")
+        if f.startswith(src["prefix"]) and f.endswith(".parquet")
+    ]
+    return sorted(files)
 
-    ds = load_dataset(
-        source["path"], name=source["name"], split=source["split"], streaming=True
-    )
-    eos = tokenizer.eos_token_id
-    if eos is None:
-        raise SystemExit(f"{tokenizer.name_or_path} has no eos token, cannot pack documents")
 
-    produced = 0
-    bar = tqdm(total=budget, unit="tok", unit_scale=True, desc=f"{label:<8}", leave=True)
-    for doc in ds:
-        text = doc.get("text")
-        if not text:
-            continue
-        ids = tokenizer(text, add_special_tokens=False)["input_ids"]
-        ids.append(eos)  # a document boundary the model can learn to respect
-        arr = np.asarray(ids, dtype=DTYPE)
-        produced += len(arr)
-        bar.update(len(arr))
-        yield arr
-        if produced >= budget:
-            break
-    bar.close()
-    if produced < budget * 0.98:
-        print(
-            f"[warning] {label}: only {produced:,} tokens available, asked for {budget:,}"
+def fetch(lang: str, remote: str, scratch: Path) -> Path:
+    from huggingface_hub import hf_hub_download
+
+    return Path(
+        hf_hub_download(
+            SOURCES[lang]["repo"],
+            remote,
+            repo_type="dataset",
+            local_dir=str(scratch / lang),
         )
+    )
+
+
+def tokenize_shard(path: Path, tokenizer, batch: int = 1000) -> np.ndarray:
+    """Read one parquet shard and return its token ids.
+
+    Batching the tokenizer is a 4.6x speedup over one call per document, since
+    the fast tokenizer parallelizes inside Rust.
+    """
+    import pyarrow.parquet as pq
+
+    eos = tokenizer.eos_token_id
+    chunks: list[np.ndarray] = []
+    table = pq.read_table(path, columns=["text"])
+    texts = table.column("text").to_pylist()
+    for i in range(0, len(texts), batch):
+        window = [t for t in texts[i : i + batch] if t]
+        if not window:
+            continue
+        for ids in tokenizer(window, add_special_tokens=False)["input_ids"]:
+            ids.append(eos)  # a document boundary the model can learn to respect
+            chunks.append(np.asarray(ids, dtype=DTYPE))
+    return np.concatenate(chunks) if chunks else np.empty(0, dtype=DTYPE)
 
 
 def write_split(
-    tokenizer, budgets: dict[str, int], out_dir: Path, split: str, seed: int
+    tokenizer,
+    budgets: dict[str, int],
+    out_dir: Path,
+    split: str,
+    scratch: Path,
+    *,
+    workers: int = 4,
 ) -> dict[str, int]:
-    """Interleave the languages document by document and write one ``.bin``.
+    """Fill one ``.bin`` by alternating languages, shard by shard.
 
-    Interleaving matters. Concatenating English then French would give the
-    model a curriculum it never asked for, and the loss curve would show a
-    cliff at the boundary rather than a mixture.
+    Interleaving happens at shard granularity rather than per document, which
+    is enough because ``TokenDataset`` samples windows at uniformly random
+    offsets: a batch mixes languages whatever the file order. Concatenating
+    would only matter for a reader that walks the file sequentially.
+
+    Shards are deleted as soon as they are tokenized, so peak disk stays at a
+    couple of shards rather than the whole corpus.
     """
-    rng = np.random.default_rng(seed)
-    streams = {
-        lang: stream_tokens(tokenizer, SOURCES[lang], budget, f"{split}/{lang}")
-        for lang, budget in budgets.items()
-        if budget > 0
-    }
-    remaining = dict(budgets)
-    counts = {lang: 0 for lang in streams}
-
+    remaining = {k: v for k, v in budgets.items() if v > 0}
+    queues = {lang: list_shards(lang) for lang in remaining}
+    counts = {lang: 0 for lang in remaining}
     path = out_dir / f"{split}.bin"
-    with path.open("wb") as fh:
-        while streams:
-            total = sum(max(remaining[lang], 0) for lang in streams)
-            if total <= 0:
-                break
-            langs = list(streams)
-            weights = np.array([max(remaining[lang], 0) for lang in langs], dtype=float)
-            lang = langs[int(rng.choice(len(langs), p=weights / weights.sum()))]
-            try:
-                arr = next(streams[lang])
-            except StopIteration:
-                streams.pop(lang)
-                continue
-            fh.write(arr.tobytes())
-            counts[lang] += len(arr)
-            remaining[lang] -= len(arr)
-            if remaining[lang] <= 0:
-                streams.pop(lang)
+
+    bar = tqdm(
+        total=sum(remaining.values()), unit="tok", unit_scale=True, desc=f"{split:<6}"
+    )
+    with path.open("wb") as fh, ThreadPoolExecutor(max_workers=workers) as pool:
+        prefetch: dict[str, object] = {}
+        while remaining:
+            for lang in list(remaining):
+                if lang not in prefetch and queues[lang]:
+                    prefetch[lang] = pool.submit(fetch, lang, queues[lang].pop(0), scratch)
+
+            for lang in list(remaining):
+                if not queues[lang] and lang not in prefetch:
+                    print(f"[warning] {lang}: ran out of shards, {remaining[lang]:,} short")
+                    remaining.pop(lang)
+                    continue
+                future = prefetch.pop(lang, None)
+                if future is None:
+                    continue
+                shard = future.result()
+                tokens = tokenize_shard(shard, tokenizer)
+                shard.unlink(missing_ok=True)
+
+                keep = tokens[: remaining[lang]]
+                fh.write(keep.tobytes())
+                counts[lang] += len(keep)
+                remaining[lang] -= len(keep)
+                bar.update(len(keep))
+                if remaining[lang] <= 0:
+                    remaining.pop(lang)
+    bar.close()
     return counts
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--out", type=Path, required=True)
-    p.add_argument(
-        "--tokens", type=float, default=6e9, help="total training tokens to produce"
-    )
+    p.add_argument("--tokens", type=float, default=6e9, help="training tokens to produce")
     p.add_argument(
         "--en-ratio", type=float, default=0.7, help="share of English, the rest is French"
     )
     p.add_argument("--val-tokens", type=float, default=5e6)
     p.add_argument("--tokenizer", type=str, default="croissantllm/CroissantLLMBase")
+    p.add_argument(
+        "--scratch",
+        type=Path,
+        default=Path("/tmp/mt_shards"),
+        help="where parquet shards land, deleted as they are consumed. Point this "
+        "at the big ephemeral disk, not at the persistent volume",
+    )
+    p.add_argument("--workers", type=int, default=4, help="parallel shard downloads")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args()
 
     if not 0.0 <= args.en_ratio <= 1.0:
         raise SystemExit("--en-ratio must lie in [0, 1]")
 
-    out = args.out
+    out, scratch = args.out, args.scratch
     out.mkdir(parents=True, exist_ok=True)
+    scratch.mkdir(parents=True, exist_ok=True)
     tokenizer = build_tokenizer(args.tokenizer)
 
     total, val_total = int(args.tokens), int(args.val_tokens)
     plan = {
-        "train": {
-            "en": int(total * args.en_ratio),
-            "fr": total - int(total * args.en_ratio),
-        },
         "val": {
             "en": int(val_total * args.en_ratio),
             "fr": val_total - int(val_total * args.en_ratio),
+        },
+        "train": {
+            "en": int(total * args.en_ratio),
+            "fr": total - int(total * args.en_ratio),
         },
     }
 
     print(f"tokenizer : {args.tokenizer}, vocab {tokenizer.vocab_size:,}")
     print(f"mixture   : {args.en_ratio:.0%} English, {1 - args.en_ratio:.0%} French")
-    for split, budgets in plan.items():
-        print(f"{split:<9} : " + ", ".join(f"{k} {v:,}" for k, v in budgets.items()))
+    print(f"scratch   : {scratch}")
     print(f"output    : {out.resolve()}\n")
 
     t0 = time.perf_counter()
     counts = {
-        split: write_split(tokenizer, budgets, out, split, args.seed + i)
-        for i, (split, budgets) in enumerate(plan.items())
+        split: write_split(tokenizer, budgets, out, split, scratch, workers=args.workers)
+        for split, budgets in plan.items()
     }
+    shutil.rmtree(scratch, ignore_errors=True)
 
     meta = {
         "vocab_size": tokenizer.vocab_size,
@@ -198,11 +230,10 @@ def main() -> None:
     }
     (out / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
-    print("\ndone")
+    print(f"\ndone in {meta['prepared_s'] / 60:.0f} min")
     for split, c in counts.items():
-        size_mb = (out / f"{split}.bin").stat().st_size / 2**20
-        print(f"  {split:<6} {sum(c.values()):>14,} tokens  {size_mb:>9,.0f} MiB  {c}")
-    print(f"  meta   {out / 'meta.json'}")
+        size = (out / f"{split}.bin").stat().st_size / 2**30
+        print(f"  {split:<6} {sum(c.values()):>14,} tokens  {size:>6.1f} GiB  {c}")
 
 
 if __name__ == "__main__":
