@@ -131,11 +131,17 @@ written for. Loss at that point was already **4.21 validation**, down from
 
 ## Cost so far
 
-| Phase | Time | Cost at $0.34/h |
+The pod actually billed **$0.74/h**, not the $0.34 quoted for a Community Cloud
+RTX 4090. Every estimate given during the run was therefore roughly half the
+real figure. **Check `runpodctl pod list` for `costPerHr` before quoting a cost**,
+rather than trusting a price list.
+
+| Phase | Time | Cost at $0.74/h |
 |---|---|---|
-| Setup, install, four bug fixes | ~2 h | ~$0.70 |
-| Data preparation (6B tokens) | ~1 h | ~$0.35 |
-| Training | 27 to 32 h, to be measured | ~$9 to $11 |
+| Setup, install, five bug fixes | ~2 h | ~$1.50 |
+| Data preparation (6B tokens) | ~1 h | ~$0.75 |
+| Training, 10k steps of 44k | ~6 h | ~$4.40 |
+| **Total** | **~9 h** | **~$6.70** |
 
 The two hours of debugging were not wasted: every one of those bugs would have
 surfaced during the 30 hour run instead, and three of them would have killed it

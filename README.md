@@ -518,7 +518,7 @@ corpus, to check that the whole thing survives contact with reality.
 | Data | **70% English** [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), **30% French** [FineWeb2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2) `fra_Latn` |
 | Tokens seen | **1.33 Md** of the 6.03 Md planned, so **13.6 per deployed parameter** |
 | Validation loss | **3.41**, perplexity **30.2** |
-| Cost | **~$3** of GPU time, about 9 hours of pod |
+| Cost | **~$7** of GPU time, about 9 hours of pod at $0.74/h |
 
 The run was stopped at step 10,000 of 44,000 because the output was already
 good enough to judge the architecture, and the remaining 26 hours would have
