@@ -163,9 +163,10 @@ def train(
                 val_loss = evaluate(model, val_data, train_cfg, device, amp_dtype)
                 run.metric(step=step, **{"loss/val": val_loss})
                 if run.best("loss/val", val_loss, step):
+                    # inference only, so no optimizer state and a third of the size
                     save_checkpoint(
                         model, optimizer, scheduler, scaler, step, cfg,
-                        run.model_dir / "best_model.pt",
+                        run.model_dir / "best_model.pt", weights_only=True,
                     )
 
             if train_cfg.ckpt_interval and (step + 1) % train_cfg.ckpt_interval == 0:
@@ -197,26 +198,35 @@ def evaluate(model, dataset, train_cfg, device, amp_dtype, batches: int = 20) ->
 
 
 def save_checkpoint(
-    model, optimizer, scheduler, scaler, step, cfg: Config, path: Path
+    model, optimizer, scheduler, scaler, step, cfg: Config, path: Path,
+    *, weights_only: bool = False,
 ) -> None:
-    """Everything needed to continue, not only the weights.
+    """Save a checkpoint, either resumable or inference-sized.
 
-    Dropping the scheduler or the scaler makes a resumed run restart its
-    learning rate schedule from zero, which is silent and wrong.
+    A resumable checkpoint carries the optimizer, the scheduler and the scaler.
+    Dropping any of them makes a resumed run restart its learning rate schedule
+    from zero, which is silent and wrong.
+
+    ``weights_only=True`` keeps just the model, which is a third of the size.
+    AdamW holds two fp32 moments per parameter, so the optimizer state is twice
+    the model itself. The best-so-far checkpoint is only ever loaded for
+    inference, so paying 1.33 GB for it instead of 444 MB is what filled a
+    20 GB volume and killed a run at step 1999.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     inner = getattr(model, "_orig_mod", model)  # unwrap torch.compile
-    torch.save(
-        {
-            "step": step,
-            "model": inner.state_dict(),
+    payload = {"step": step, "model": inner.state_dict(), "config": cfg.model_dump()}
+    if not weights_only:
+        payload |= {
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
             "scaler": scaler.state_dict(),
-            "config": cfg.model_dump(),
-        },
-        path,
-    )
+        }
+    # write beside the target then rename, so a full disk cannot leave a
+    # half-written file where a valid checkpoint used to be
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, tmp)
+    tmp.replace(path)
 
 
 def load_checkpoint(path: Path, model, optimizer, scheduler, scaler, device) -> int:

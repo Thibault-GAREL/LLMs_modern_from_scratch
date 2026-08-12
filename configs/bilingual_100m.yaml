@@ -71,8 +71,13 @@ train:
   # 46000 steps x 8 x 8 x 2048 = 6.03B tokens, about 62 per deployed parameter
   max_steps: 46000
 
-  micro_batch_size: 8
-  grad_accum_steps: 8      # effective batch of 64 sequences, 131k tokens per step
+  # 8 x 8 overflows 24 GB. MTP depth 2 computes three cross entropies over a
+  # 32k vocabulary, and the LM head produces its logits in fp32, so the logits
+  # alone are 3 x batch x seq x 32000 x 4 bytes. At batch 8 and seq 2048 that
+  # is 6.3 GB before any activation. Halving the micro batch and doubling the
+  # accumulation keeps the same 131k tokens per step.
+  micro_batch_size: 4
+  grad_accum_steps: 16     # effective batch of 64 sequences, 131k tokens per step
   seq_len: 2048
 
   z_loss_coef: 1.0e-4
