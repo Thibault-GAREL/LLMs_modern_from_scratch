@@ -1,0 +1,1 @@
+train.bin: 6,000,000,000 tokens, vocab 32,000, mixture {'en': 0.7, 'fr': 0.3}

@@ -1,0 +1,9 @@
+artifact_location: file:///workspace/repo/mlruns/345473905314364333
+creation_time: 1786487584654
+effective_trace_archival_retention: null
+experiment_id: '345473905314364333'
+last_update_time: 1786487584654
+lifecycle_stage: active
+name: repo
+trace_location: null
+workspace: default

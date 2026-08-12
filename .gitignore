@@ -19,11 +19,12 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 
-# Outputs (checkpoints, logs, results)
-outputs/
+# Outputs: the logs and metrics are versioned on purpose, the weights cannot be
+# (423 MB is past GitHub's file limit), so only the model directories are ignored
+outputs/models/
 
-# MLflow
-mlruns/
+# MLflow: kept in git so the loss curves survive a deleted pod, as thibault-logging asks
+# mlruns/
 
 # Reference PDFs (heavy, see papers/_INDEX.md for the arXiv links)
 papers/**/*.pdf
@@ -46,3 +47,4 @@ htmlcov/
 # Logs
 *.log
 .cache/
+results.tar.gz

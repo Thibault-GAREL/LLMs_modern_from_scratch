@@ -501,6 +501,96 @@ bash papers/download.sh
 
 ---
 
+## 🤖 The model we actually trained
+
+`configs/bilingual_100m.yaml`, trained on a rented RTX 4090. This is the
+architecture of `configs/best.yaml` scaled up, pointed at a real bilingual
+corpus, to check that the whole thing survives contact with reality.
+
+### What it is
+
+| | |
+|---|---|
+| Parameters | **110.9M** trained, **96.6M** deployed once the MTP modules are dropped |
+| Architecture | RoPE, RMSNorm pre-norm, SwiGLU, **MQA**, **MTP depth 2**, no bias, tied embeddings |
+| Tokenizer | [CroissantLLM](https://huggingface.co/croissantllm/CroissantLLMBase), 32k, built for French and English |
+| Context | 2048 tokens |
+| Data | **70% English** [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), **30% French** [FineWeb2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2) `fra_Latn` |
+| Tokens seen | **1.33 Md** of the 6.03 Md planned, so **13.6 per deployed parameter** |
+| Validation loss | **3.41**, perplexity **30.2** |
+| Cost | **~$3** of GPU time, about 9 hours of pod |
+
+The run was stopped at step 10,000 of 44,000 because the output was already
+good enough to judge the architecture, and the remaining 26 hours would have
+cost $9 for a marginal gain. It is therefore **undertrained on purpose**:
+Chinchilla asks for 20 tokens per parameter and this saw 13.6.
+
+### The loss curve
+
+| step | train | validation | grad norm |
+|---|---|---|---|
+| 0 | 10.52 | 6.03 | 5.17 |
+| 500 | 6.05 | 5.07 | 1.36 |
+| 2,000 | 4.24 | 3.93 | 0.78 |
+| 4,000 | 3.66 | 3.69 | 0.51 |
+| 8,000 | 3.48 | 3.44 | 0.52 |
+| **10,000** | **3.46** | **3.41** | 0.52 |
+
+Starting exactly at `ln(32000) = 10.37` and descending monotonically, with the
+gradient norm settling around 0.5 and never spiking. No instability, no loss
+spike, no divergence: the socle behaved.
+
+### What it writes
+
+Sampling with `temperature 0.9, top_p 0.92, repetition_penalty 1.15`.
+
+> **[EN]** *The history of the city is* → gone to the Bishops. Instead, it is
+> rehabilitated as a "permanent metaphor," and it is replaced by a priceless
+> diagram. It is perhaps not surprising that Chagoshkci's initiative was the
+> time for the Bishop's
+
+> **[FR]** *L'histoire de la ville est* → un roman de fiction originaux, et qui
+> n'a rien à voir avec l'histoire. L'image est mythique et on ne peut pas se
+> concentrer sur sa vie engloutie. Il y a des moments où j'ai vraiment eu envie
+> de lire ce livre ou peut-être juste pour comprendre cette
+
+> **[FR]** *La cuisine française est* → un outil novateur sur les pratiques
+> traditionnelles de la cuisine française. Dans cet article, nous nous
+> familiariserons avec cette notion de marché, celle qui apparaît au cours des
+> siècles à travers la maison et le restaurant aux Etats-Unis.
+
+**What works.** Grammar, agreement, punctuation and typographic apostrophes are
+correct in both languages. Sentences connect with real discourse markers
+(*Instead*, *Il y a des moments où*, *Dans cet article*). The model switches
+language cleanly from the prompt alone, which is the point of a bilingual
+tokenizer and a mixed corpus.
+
+**What does not.** It invents proper nouns confidently (*Chagoshkci*), loses the
+thread after two sentences, and **loops without a repetition penalty**: at
+`repetition_penalty 1.0` the French prompt produced *"un monde à la fois"*
+eleven times in a row. It answers no questions and follows no instructions,
+because nothing in this training asked it to.
+
+For scale: [CroissantLLM](https://arxiv.org/abs/2402.00786), the reference
+bilingual model, is **13x larger and saw 2000x more tokens**.
+
+### Reproducing it
+
+```bash
+python scripts/prepare_data.py --out data/bilingual --tokens 6e9 --en-ratio 0.7
+python -m mt.train --config configs/bilingual_100m.yaml --data-dir data/bilingual
+python scripts/generate.py --ckpt outputs/models/<run>/final_model.pt
+```
+
+The weights are **not in this repository**: 423 MB is well past GitHub's file
+limit. `outputs/logs/` and `mlruns/` are versioned, so the loss curves survive
+even though the model does not.
+
+Everything that broke on the way, with the measurements, is in
+**[docs/training_notes.md](docs/training_notes.md)**.
+
+---
+
 ## 📚 What to train it on
 
 The library takes token ids and stops there, so the corpus is a separate

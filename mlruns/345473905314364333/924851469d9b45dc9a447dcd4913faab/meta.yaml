@@ -1,0 +1,14 @@
+artifact_uri: file:///workspace/repo/mlruns/345473905314364333/924851469d9b45dc9a447dcd4913faab/artifacts
+end_time: 1786514898428
+entry_point_name: ''
+experiment_id: '345473905314364333'
+lifecycle_stage: active
+run_id: 924851469d9b45dc9a447dcd4913faab
+run_name: bilingual-100m_run-02
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1786493919961
+status: 4
+tags: []
+user_id: root

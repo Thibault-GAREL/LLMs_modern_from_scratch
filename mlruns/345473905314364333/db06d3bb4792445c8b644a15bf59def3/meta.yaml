@@ -1,0 +1,14 @@
+artifact_uri: file:///workspace/repo/mlruns/345473905314364333/db06d3bb4792445c8b644a15bf59def3/artifacts
+end_time: 1786487585516
+entry_point_name: ''
+experiment_id: '345473905314364333'
+lifecycle_stage: active
+run_id: db06d3bb4792445c8b644a15bf59def3
+run_name: sanity_run-01
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1786487584936
+status: 4
+tags: []
+user_id: root

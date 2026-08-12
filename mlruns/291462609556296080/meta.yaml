@@ -1,0 +1,9 @@
+artifact_location: file:///D:/Loisir/Code_python/LLM_new_methods/mlruns/291462609556296080
+creation_time: 1786462893323
+effective_trace_archival_retention: null
+experiment_id: '291462609556296080'
+last_update_time: 1786462893323
+lifecycle_stage: active
+name: LLM_new_methods
+trace_location: null
+workspace: default

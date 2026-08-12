@@ -1,0 +1,14 @@
+artifact_uri: file:///D:/Loisir/Code_python/LLM_new_methods/mlruns/291462609556296080/aa2f72ef7f44421cae6782d3019e8a3b/artifacts
+end_time: 1786478986966
+entry_point_name: ''
+experiment_id: '291462609556296080'
+lifecycle_stage: active
+run_id: aa2f72ef7f44421cae6782d3019e8a3b
+run_name: modern-transformer_run-05
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1786478986618
+status: 3
+tags: []
+user_id: garel
