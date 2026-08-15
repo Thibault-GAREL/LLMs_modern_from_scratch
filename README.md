@@ -427,167 +427,178 @@ The decoder block, with every switchable component and the config flag that cont
 
 ## 💻 Run it on Your PC
 
-Clone the repository and install dependencies:
-
 ```bash
-git clone https://github.com/Thibault-GAREL/modern-transformer.git
-cd modern-transformer
-
-python -m venv .venv # if you don't have a virtual environment
-source .venv/bin/activate   # Linux / macOS
-.venv\Scripts\activate      # Windows
-
+git clone https://github.com/Thibault-GAREL/LLMs_modern_from_scratch.git
+cd LLMs_modern_from_scratch
 pip install -e ".[dev]"
 ```
 
-⚠️ The default install pulls the CPU build of PyTorch. For a **CUDA-compatible GPU**, install torch first:
+⚠️ That pulls the **CPU** build of PyTorch. For a CUDA GPU, install torch first:
 
 ```bash
 pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 pip install -e ".[dev]"
 ```
 
-### Run the tests
-
-```bash
-pytest
-```
-
-### Train a model
-
-```bash
-python -m mt.train --config configs/llama_style_150m.yaml --max-steps 200
-```
-
-Any config field can be overridden from the command line, which is how the
-shipped profiles are shrunk to fit a smaller GPU:
-
-```bash
-python -m mt.train --config configs/moe_1b_a200m.yaml   --set model.d_model=128 --set model.moe.n_experts=8 --max-steps 100
-```
-
-Every loss term is logged separately to `metrics.jsonl`, plus the routing
-entropy and per-expert load on MoE layers. Merging them into one number is how
-a collapsing router goes unnoticed.
-
-### Load a profile
-
-```python
-from mt.config import Config
-
-cfg = Config.from_yaml("configs/llama_style_150m.yaml")
-print(cfg.model.attention.kind, cfg.model.head_dim)   # gqa 64
-```
-
-### Generate
-
-```python
-from mt.generate import SamplingConfig, generate, speculative_generate
-
-out = generate(model, prompt_ids, 128, SamplingConfig(temperature=0.8, top_p=0.9))
-
-# same output distribution as the target model, verified statistically
-out, stats = speculative_generate(target, draft, prompt_ids, 128, gamma=4)
-print(stats.acceptance_rate)
-```
-
-### Get the reference papers
-
-The PDFs are gitignored because they are heavy, this restores all 29 of them:
-
-```bash
-bash papers/download.sh
-```
+Everything below runs on CPU except where a GPU is named.
 
 ---
 
-## 🤖 The model we actually trained
+### 1. Run the tests
 
-`configs/bilingual_100m.yaml`, trained on a rented RTX 4090. This is the
-architecture of `configs/best.yaml` scaled up, pointed at a real bilingual
-corpus, to check that the whole thing survives contact with reality.
+The fastest way to check the whole library. Every component has a naive
+reference implementation and a fast path, and a test asserting the two agree
+numerically.
 
-### What it is
+```bash
+pytest                      # the full suite, under a minute
+pytest -q --durations=10    # with the slowest tests listed
+pytest tests/test_pos.py    # one component at a time
+```
 
-| | |
+The interesting ones to read, because each pins down a claim rather than a shape:
+
+| Test | What it proves |
 |---|---|
-| Parameters | **110.9M** trained, **96.6M** deployed once the MTP modules are dropped |
-| Architecture | RoPE, RMSNorm pre-norm, SwiGLU, **MQA**, **MTP depth 2**, no bias, tied embeddings |
-| Tokenizer | [CroissantLLM](https://huggingface.co/croissantllm/CroissantLLMBase), 32k, built for French and English |
-| Context | 2048 tokens |
-| Data | **70% English** [FineWeb-Edu](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu), **30% French** [FineWeb2](https://huggingface.co/datasets/HuggingFaceFW/fineweb-2) `fra_Latn` |
-| Tokens seen | **1.33 Md** of the 6.03 Md planned, so **13.6 per deployed parameter** |
-| Validation loss | **3.41**, perplexity **30.2** |
-| Cost | **~$7** of GPU time, about 9 hours of pod at $0.74/h |
+| `test_rope_is_relative` | after rotation, `<q_m, k_n>` depends only on `m - n` |
+| `test_gqa_with_full_kv_heads_equals_mha` | GQA is a generalization, not a different operator |
+| `test_mla_absorption_matches_naive` | folding `W_UK` and `W_UV` away changes no logit |
+| `test_speculative_output_distribution_equals_the_target` | speculative decoding is free speed, not a quality trade |
+| `test_naive_rejection_would_fail_the_same_check` | and the test above has teeth |
+| `test_single_expert_moe_equals_the_dense_ffn` | a degenerate MoE is exactly the FFN it replaces |
+| `test_cached_decoding_matches_an_uncached_full_forward` | the KV cache changes nothing but the cost |
 
-The run was stopped at step 10,000 of 44,000 because the output was already
-good enough to judge the architecture, and the remaining 26 hours would have
-cost $9 for a marginal gain. It is therefore **undertrained on purpose**:
-Chinchilla asks for 20 tokens per parameter and this saw 13.6.
+---
 
-### The loss curve
+### 2. Try the trained model
 
-| step | train | validation | grad norm |
-|---|---|---|---|
-| 0 | 10.52 | 6.03 | 5.17 |
-| 500 | 6.05 | 5.07 | 1.36 |
-| 2,000 | 4.24 | 3.93 | 0.78 |
-| 4,000 | 3.66 | 3.69 | 0.51 |
-| 8,000 | 3.48 | 3.44 | 0.52 |
-| **10,000** | **3.46** | **3.41** | 0.52 |
+The 111M bilingual model from the section above. Its weights are not in the
+repository (423 MB), so this needs a checkpoint you trained or received.
 
-Starting exactly at `ln(32000) = 10.37` and descending monotonically, with the
-gradient norm settling around 0.5 and never spiking. No instability, no loss
-spike, no divergence: the socle behaved.
+**Ask what comes next.** A language model computes exactly one thing, a
+distribution over the next token. This prints it:
 
-### What it writes
+```bash
+python scripts/generate.py --ckpt outputs/models/<run>/final_model.pt     --prompt "La capitale de la France est" --next
+```
 
-Sampling with `temperature 0.9, top_p 0.92, repetition_penalty 1.15`.
+```
+prompt : 'La capitale de la France est'
+  7 tokens in, 10 most likely continuations:
 
-> **[EN]** *The history of the city is* → gone to the Bishops. Instead, it is
-> rehabilitated as a "permanent metaphor," and it is replaced by a priceless
-> diagram. It is perhaps not surprising that Chagoshkci's initiative was the
-> time for the Bishop's
+  token                     probability
+  ------------------------ ------------
+  la                            17.27%  #######
+  le                            12.43%  #####
+  une                            2.56%  #
+```
 
-> **[FR]** *L'histoire de la ville est* → un roman de fiction originaux, et qui
-> n'a rien à voir avec l'histoire. L'image est mythique et on ne peut pas se
-> concentrer sur sa vie engloutie. Il y a des moments où j'ai vraiment eu envie
-> de lire ce livre ou peut-être juste pour comprendre cette
+**Continue a prompt**, which is that same step repeated with the chosen token
+fed back in:
 
-> **[FR]** *La cuisine française est* → un outil novateur sur les pratiques
-> traditionnelles de la cuisine française. Dans cet article, nous nous
-> familiariserons avec cette notion de marché, celle qui apparaît au cours des
-> siècles à travers la maison et le restaurant aux Etats-Unis.
+```bash
+python scripts/generate.py --ckpt outputs/models/<run>/final_model.pt     --prompt "La capitale de la France est" --tokens 40
+```
 
-**What works.** Grammar, agreement, punctuation and typographic apostrophes are
-correct in both languages. Sentences connect with real discourse markers
-(*Instead*, *Il y a des moments où*, *Dans cet article*). The model switches
-language cleanly from the prompt alone, which is the point of a bilingual
-tokenizer and a mixed corpus.
+> La capitale de la France est **Paris**. Elle a aussi ouvert des ponts entre le
+> Valais et Paris (1908-1940), mais elle a également fait entrer les ruisseaux
+> du Seine.
 
-**What does not.** It invents proper nouns confidently (*Chagoshkci*), loses the
-thread after two sentences, and **loops without a repetition penalty**: at
-`repetition_penalty 1.0` the French prompt produced *"un monde à la fois"*
-eleven times in a row. It answers no questions and follows no instructions,
-because nothing in this training asked it to.
+Without `--prompt` it runs one English and one French prompt in a row.
 
-For scale: [CroissantLLM](https://arxiv.org/abs/2402.00786), the reference
-bilingual model, is **13x larger and saw 2000x more tokens**.
+| Option | Default | Effect |
+|---|---|---|
+| `--repetition-penalty` | 1.15 | **set it to 1.0 and this model loops**, that is its main flaw |
+| `--temperature` | 0.9 | lower is more predictable, 0 always takes the most likely token |
+| `--top-p` | 0.92 | keep the tokens covering 92% of the mass |
+| `--seed` | 0 | same seed, same output |
+| `--top-k-show` | 10 | rows printed by `--next` |
 
-### Reproducing it
+The tokenizer backend is detected automatically: `transformers` if installed,
+otherwise the much lighter `tokenizers`, which downloads a 32 kB
+`tokenizer.json` once into `.cache/`.
+
+---
+
+### 3. Train something
+
+```bash
+# a two minute smoke test on synthetic bytes, no data needed
+python -m mt.train --config configs/base.yaml --max-steps 200
+```
+
+⚠️ **`best.yaml` and `bilingual_100m.yaml` are sized for a 24 GB card** and
+overflow a smaller one. Verified: on a 6 GB GTX 1660 Ti they raise
+`OutOfMemoryError` before the first step. Any config field can be overridden,
+which is how they are shrunk to fit:
+
+```bash
+# the measured best architecture, on a 6 GB GPU
+python -m mt.train --config configs/best.yaml --max-steps 500     --set train.micro_batch_size=4 --set train.grad_accum_steps=1     --set train.seq_len=1024
+
+# a pod-sized MoE profile, on any GPU
+python -m mt.train --config configs/moe_1b_a200m.yaml     --set model.d_model=128 --set model.moe.n_experts=8 --max-steps 100
+```
+
+Reduce `micro_batch_size` before `seq_len`: raising `grad_accum_steps` by the
+same factor keeps the effective batch identical, so the run is unchanged.
+
+For a real bilingual run, prepare the corpus first (about an hour, 12 GB):
 
 ```bash
 python scripts/prepare_data.py --out data/bilingual --tokens 6e9 --en-ratio 0.7
 python -m mt.train --config configs/bilingual_100m.yaml --data-dir data/bilingual
-python scripts/generate.py --ckpt outputs/models/<run>/final_model.pt
+python -m mt.train --config configs/bilingual_100m.yaml     --data-dir data/bilingual --resume outputs/models/<run>/ckpt.pt
 ```
 
-The weights are **not in this repository**: 423 MB is well past GitHub's file
-limit. `outputs/logs/` and `mlruns/` are versioned, so the loss curves survive
-even though the model does not.
+Every loss term is logged separately to `metrics.jsonl`, plus the routing
+entropy and per-expert load on MoE layers. Merging them into one number is how
+a collapsing router goes unnoticed. Curves land in MLflow:
 
-Everything that broke on the way, with the measurements, is in
-**[docs/training_notes.md](docs/training_notes.md)**.
+```bash
+mlflow ui        # from the repository root
+```
+
+---
+
+### 4. Reproduce the measurements
+
+Every number in [docs/ablations.md](docs/ablations.md) comes from these:
+
+```bash
+python bench/ablation.py                    # the full sweep, one field at a time
+python bench/ablation.py --only rope,swiglu # or a subset, baselines pulled in
+python bench/kv_memory.py                   # cache cost per token, no GPU needed
+python bench/throughput.py --context 2048   # prefill and decode speed, GPU
+python bench/coord_check.py                 # muP width invariance, GPU
+```
+
+`ablation.py` writes after every variant and accepts `--resume`, because a
+sweep is long enough that losing it to an interruption is a real cost.
+
+---
+
+### 5. Read a config from Python
+
+```python
+from mt.config import Config
+
+cfg = Config.from_yaml("configs/best.yaml")
+print(cfg.model.attention.kind, cfg.model.head_dim)   # mqa 64
+```
+
+A typo in a YAML file raises immediately rather than being silently ignored,
+which is what `extra="forbid"` on every config class buys.
+
+---
+
+### 6. Get the reference papers
+
+The 29 PDFs are gitignored because they are heavy, this restores them:
+
+```bash
+bash papers/download.sh
+```
 
 ---
 
