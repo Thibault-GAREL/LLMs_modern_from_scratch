@@ -717,6 +717,7 @@ choice rather than an oversight.
 | **Quantization**, post-training and quantization-aware | Compresses a finished model. Orthogonal to which components that model is built from. |
 | **Custom kernels** beyond what PyTorch ships | A fused kernel changes the memory traffic, not the result. The one exception, FlashAttention, is reachable through SDPA and the `[flash]` extra. |
 | **Post-training** entirely: supervised fine-tuning, RLHF, reasoning traces | A separate field with its own ablations. This repo stops at the pretrained model. |
+| **The agent harness**: the loop, tool calling, context and cache management | Wraps a finished model instead of changing what it computes. A trained `mt` checkpoint predicts tokens, it takes a harness to make it read files and run commands. Documented in [llm-harness](https://github.com/Thibault-GAREL/LLM_harness), which drives this library as its local provider. |
 | **Tokenizer training** | Upstream of the architecture. `mt` takes token ids, and `bench/ablation.py` works on raw bytes precisely so no tokenizer choice contaminates a comparison. |
 | **Anything about closed models** | GPT, Claude and Gemini architectures are not published. What is written here comes from open-weights papers, and community inference is labelled as such. |
 
@@ -742,6 +743,9 @@ This project is based on the papers listed in [papers/_INDEX.md](papers/_INDEX.m
 - 📄 [DeepSeek-V2](https://arxiv.org/abs/2405.04434) and [DeepSeek-V3](https://arxiv.org/abs/2412.19437), for MLA, fine-grained MoE and MTP
 - 📄 [The Llama 3 Herd of Models](https://arxiv.org/abs/2407.21783) (Grattafiori et al., 2024)
 
-Related work of mine: [Language Models from Scratch](https://github.com/Thibault-GAREL/Language_Models), where I built a bigram model and a 2017-style Transformer from scratch. This repo picks up exactly where that one stops.
+Related work of mine, in the order they were built:
+
+- 🤖 [Language Models from Scratch](https://github.com/Thibault-GAREL/Language_Models), a bigram model and a 2017-style Transformer written from scratch. This repo picks up exactly where that one stops.
+- 🔁 [llm-harness](https://github.com/Thibault-GAREL/LLM_harness), the **harness**, the program wrapped around a trained model. A checkpoint from this library predicts tokens and nothing else. The harness is the loop that gives it tools, feeds the results back as new turns, and manages the context window and its cache, which is what turns a model into an agent. It uses `mt` as its local provider.
 
 Code created by me 😎, Thibault GAREL - [Github](https://github.com/Thibault-GAREL)
